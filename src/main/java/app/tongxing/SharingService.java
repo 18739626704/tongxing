@@ -35,16 +35,19 @@ class SharingService {
     private final JdbcTemplate jdbc;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     private final PasswordEncoder passwords;
+    private final AmapPlaceNames placeNames;
     private final byte[] enrollmentKey;
     private final SecureRandom random = new SecureRandom();
 
     SharingService(MemberMapper members, InvitationMapper invitations, PositionSampleMapper samples, WriteGuard guard,
-                   PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json, @Value("${tongxing.enrollment-key}") String enrollmentKey) {
+                   PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json,
+                   AmapPlaceNames placeNames, @Value("${tongxing.enrollment-key}") String enrollmentKey) {
         this.members = members;
         this.invitations = invitations;
         this.samples = samples;
         this.guard = guard;
         this.passwords = passwords;
+        this.placeNames = placeNames;
         this.jdbc = jdbc;
         this.json = json;
         this.enrollmentKey = enrollmentKey.getBytes(StandardCharsets.UTF_8);
@@ -188,7 +191,7 @@ class SharingService {
                     """, reading.screenMinutes(), reading.screenDate(), self.id,
                     reading.screenDate(), reading.screenDate(), reading.screenMinutes());
         }
-        if (self.journeyEnabled && now - sample.recordedAt <= 120_000) recordJourney(self, sample);
+        if (self.journeyEnabled && now - sample.recordedAt <= 120_000) recordJourney(self, sample, Boolean.TRUE.equals(reading.amapPlaceNames()));
     }
 
     @Transactional
@@ -369,7 +372,7 @@ class SharingService {
         }
     }
 
-    private void recordJourney(Member self, PositionSample sample) {
+    private void recordJourney(Member self, PositionSample sample, boolean namePlaces) {
         JourneyDetector.State state = journeyState(self);
         var fix = new JourneyDetector.Fix(sample.latitude, sample.longitude, sample.accuracy, sample.recordedAt);
         var update = JourneyDetector.accept(state, fix);
@@ -380,11 +383,23 @@ class SharingService {
         } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
             throw new IllegalStateException("Could not store journey state", invalid);
         }
-        if (update.event() == JourneyDetector.Event.ARRIVE) {
-            addEvent(self, "AUTO_ARRIVE", "已到达新的停留区域", sample.recordedAt);
-        } else if (update.event() == JourneyDetector.Event.LEAVE) {
-            addEvent(self, "AUTO_LEAVE", "已离开上一停留区域", sample.recordedAt);
+        if (update.event() == null) return;
+        boolean arrived = update.event() == JourneyDetector.Event.ARRIVE;
+        String kind = arrived ? "AUTO_ARRIVE" : "AUTO_LEAVE";
+        var anchor = arrived ? update.state().anchor() : state.anchor();
+        String suffix = arrived ? "" : durationAtStop(state);
+        addEvent(self, kind, (arrived ? "已到达新的停留区域" : "已离开上一停留区域") + suffix, sample.recordedAt);
+        if (namePlaces) {
+            placeNames.enrich(self.pairId, self.id, kind, sample.recordedAt, anchor, arrived ? "已到达" : "已离开", suffix);
         }
+    }
+
+    private static String durationAtStop(JourneyDetector.State state) {
+        long minutes = Math.max(0, (state.away().at() - state.anchor().at()) / 60_000);
+        if (minutes == 0) return "";
+        if (minutes < 60) return " · 停留约 " + minutes + " 分钟";
+        String remainder = minutes % 60 == 0 ? "" : " " + minutes % 60 + " 分钟";
+        return " · 停留约 " + minutes / 60 + " 小时" + remainder;
     }
 
     private static double distanceMeters(double firstLat, double firstLon, double lat, double lon) {

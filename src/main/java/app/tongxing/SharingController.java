@@ -27,7 +27,7 @@ class SharingController {
                    @NotNull Long recordedAt, @Min(0) @Max(1500) Integer screenMinutes,
                    @Pattern(regexp = "[0-9]{4}-[0-9]{2}-[0-9]{2}") String screenDate,
                    @Size(max = 80) String deviceModel,
-                   @Pattern(regexp = "WIFI|MOBILE|ETHERNET|VPN|OTHER|OFFLINE") String networkType, @Positive Long unlockedAt) {}
+                   @Pattern(regexp = "WIFI|MOBILE|ETHERNET|VPN|OTHER|OFFLINE") String networkType, @Positive Long unlockedAt, Boolean amapPlaceNames) {}
     record Point(double latitude, double longitude, double accuracy, int battery, boolean charging, long recordedAt) {}
     record Status(String displayName, boolean sharing, Point lastLocation, Integer screenMinutes, String screenDate,
                   boolean usageEnabled, boolean appUsageEnabled, boolean deviceStatusEnabled, DeviceStatus device,
