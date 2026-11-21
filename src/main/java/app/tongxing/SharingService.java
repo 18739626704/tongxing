@@ -36,18 +36,22 @@ class SharingService {
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     private final PasswordEncoder passwords;
     private final AmapPlaceNames placeNames;
+    private final String amapAndroidKey;
     private final byte[] enrollmentKey;
     private final SecureRandom random = new SecureRandom();
 
     SharingService(MemberMapper members, InvitationMapper invitations, PositionSampleMapper samples, WriteGuard guard,
                    PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json,
-                   AmapPlaceNames placeNames, @Value("${tongxing.enrollment-key}") String enrollmentKey) {
+                   AmapPlaceNames placeNames, @Value("${AMAP_ANDROID_KEY:}") String amapAndroidKey,
+                   @Value("${tongxing.enrollment-key}") String enrollmentKey) {
         this.members = members;
         this.invitations = invitations;
         this.samples = samples;
         this.guard = guard;
         this.passwords = passwords;
         this.placeNames = placeNames;
+        String mapKey = amapAndroidKey.strip();
+        this.amapAndroidKey = mapKey.matches("[0-9a-fA-F]{32}") ? mapKey : null;
         this.jdbc = jdbc;
         this.json = json;
         this.enrollmentKey = enrollmentKey.getBytes(StandardCharsets.UTF_8);
@@ -200,7 +204,7 @@ class SharingService {
         Member self = current(username);
         Member partner = partnerOf(self);
         long now = System.currentTimeMillis();
-        return new Overview(status(self, now), partner == null ? null : status(partner, now), now, self.pairId);
+        return new Overview(status(self, now), partner == null ? null : status(partner, now), now, self.pairId, new MapConfig(amapAndroidKey, placeNames.configured()));
     }
 
     @Transactional

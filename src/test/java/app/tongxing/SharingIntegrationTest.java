@@ -21,13 +21,27 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.datasource.url=${TEST_DB_URL:jdbc:h2:mem:tongxing;MODE=MySQL;DB_CLOSE_DELAY=-1}",
         "spring.datasource.username=${TEST_DB_USER:sa}", "spring.datasource.password=${TEST_DB_PASSWORD:}",
         "server.servlet.session.cookie.secure=false",
-        "tongxing.enrollment-key=integration-test-enrollment-key"
+        "tongxing.enrollment-key=integration-test-enrollment-key",
+        "AMAP_ANDROID_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "AMAP_WEB_SERVICE_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 })
 class SharingIntegrationTest {
     private static final String PASSWORD = "integration-test-password";
     private static final String ENROLLMENT = "integration-test-enrollment-key";
     @LocalServerPort int port;
     final ObjectMapper json = new ObjectMapper();
+
+    @Test
+    void onlyAuthenticatedClientsReceiveTheAndroidMapConfiguration() throws Exception {
+        Client client = new Client();
+        assertThat(client.get("/overview").statusCode()).isEqualTo(401);
+        client.signIn("Map_config");
+        var overview = client.overview();
+        assertThat(overview.path("mapConfig").path("amapAndroidKey").asText())
+                .isEqualTo("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assertThat(overview.path("mapConfig").path("placeNamesAvailable").asBoolean()).isTrue();
+        assertThat(overview.toString()).doesNotContain("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    }
 
     @Test
     void pairingConsentPositionHistoryAndRevocation() throws Exception {

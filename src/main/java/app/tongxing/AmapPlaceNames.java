@@ -36,8 +36,10 @@ final class AmapPlaceNames {
         this.key = key.strip();
     }
 
+    boolean configured() { return key.matches("[0-9a-fA-F]{32}"); }
+
     void enrich(String pair, String sender, String kind, long at, JourneyDetector.Fix anchor, String prefix, String suffix) {
-        if (!key.matches("[0-9a-fA-F]{32}")) return;
+        if (!configured()) return;
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCommit() {
                 worker.execute(() -> {

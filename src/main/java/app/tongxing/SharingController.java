@@ -41,7 +41,8 @@ class SharingController {
     record AppUsageReport(@NotNull UUID shareKey, @NotNull java.time.LocalDate date, @NotNull Long recordedAt,
                           @NotNull @Size(max = 200) List<@NotNull @Valid AppDuration> apps) {}
     record AppUsageSnapshot(String date, long recordedAt, List<AppDuration> apps) {}
-    record Overview(Status self, Status partner, long serverTime, String pairId) {}
+    record Overview(Status self, Status partner, long serverTime, String pairId, MapConfig mapConfig) {}
+    record MapConfig(String amapAndroidKey, boolean placeNamesAvailable) {}
     record ShareState(String shareKey) {}
     record InviteCode(String code, long expiresAt) {}
 
