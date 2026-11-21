@@ -5,7 +5,6 @@ import app.tongxing.store.*;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Collections;
@@ -38,13 +37,13 @@ class SharingService {
     private final PasswordEncoder passwords;
     private final AmapPlaceNames placeNames;
     private final String amapAndroidKey;
-    private final byte[] enrollmentKey;
+    private final boolean registrationEnabled;
     private final SecureRandom random = new SecureRandom();
 
     SharingService(MemberMapper members, InvitationMapper invitations, PositionSampleMapper samples, WriteGuard guard,
                    PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json,
                    AmapPlaceNames placeNames, SavedPlaces places, @Value("${AMAP_ANDROID_KEY:}") String amapAndroidKey,
-                   @Value("${tongxing.enrollment-key}") String enrollmentKey) {
+                   @Value("${tongxing.registration-enabled}") boolean registrationEnabled) {
         this.members = members;
         this.invitations = invitations;
         this.samples = samples;
@@ -56,14 +55,13 @@ class SharingService {
         this.amapAndroidKey = mapKey.matches("[0-9a-fA-F]{32}") ? mapKey : null;
         this.jdbc = jdbc;
         this.json = json;
-        this.enrollmentKey = enrollmentKey.getBytes(StandardCharsets.UTF_8);
+        this.registrationEnabled = registrationEnabled;
     }
 
     @Transactional
     public void register(Registration registration) {
-        if (enrollmentKey.length < 24 || !MessageDigest.isEqual(enrollmentKey,
-                registration.enrollmentKey().getBytes(StandardCharsets.UTF_8))) {
-            throw failure(HttpStatus.FORBIDDEN, "注册口令无效");
+        if (!registrationEnabled) {
+            throw failure(HttpStatus.FORBIDDEN, "服务器已停止新用户注册");
         }
         if (registration.password().getBytes(StandardCharsets.UTF_8).length > 72) {
             throw failure(HttpStatus.BAD_REQUEST, "密码太长，请使用 10–64 个英文字母、数字或符号");
@@ -76,7 +74,9 @@ class SharingService {
         Member member = new Member();
         member.id = id();
         member.username = registration.username();
-        member.displayName = registration.displayName().strip();
+        String displayName = registration.displayName();
+        member.displayName = displayName == null || displayName.isBlank()
+                ? registration.username() : displayName.strip();
         member.passwordHash = passwordHash;
         members.insert(member);
     }

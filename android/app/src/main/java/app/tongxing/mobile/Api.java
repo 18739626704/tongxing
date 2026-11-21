@@ -165,16 +165,15 @@ final class Api {
         preferences.edit().remove(pauseKey(base, username)).apply();
     }
 
-    synchronized void authenticate(String address, String user, String password, String displayName, String enrollment)
+    synchronized void authenticate(String address, String user, String password, boolean register)
             throws Exception {
         base = validateBase(address);
         clearSession();
         preferences.edit().putString("base", base).apply();
         String normalized = user.trim().toLowerCase(Locale.ROOT);
         try {
-            if (displayName != null) {
-                mutate("POST", "/register", json("username", normalized, "password", password,
-                        "displayName", displayName.trim(), "enrollmentKey", enrollment.trim()));
+            if (register) {
+                mutate("POST", "/register", json("username", normalized, "password", password));
             }
             JSONObject csrf = getObject("/csrf");
             send("POST", "/login", "username=" + encode(normalized) + "&password=" + encode(password),
@@ -289,9 +288,10 @@ final class Api {
         }
     }
 
-    private static String validateBase(String address) throws IOException {
+    static String validateBase(String address) throws IOException {
         try {
-            URI uri = URI.create(address.trim());
+            String input = address.trim();
+            URI uri = URI.create(input.contains("://") ? input : "https://" + input);
             String host = uri.getHost();
             boolean localDebug = BuildConfig.DEBUG && "http".equalsIgnoreCase(uri.getScheme())
                     && ("10.0.2.2".equals(host) || "127.0.0.1".equals(host) || "localhost".equals(host));
@@ -301,7 +301,7 @@ final class Api {
             }
             return uri.normalize().toASCIIString().replaceAll("/+$", "");
         } catch (IllegalArgumentException error) {
-            throw new IOException("请输入服务器 HTTPS 地址，例如 https://share.example.com");
+            throw new IOException("请输入支持 HTTPS 的服务器域名或 IP，例如 share.example.com");
         }
     }
 

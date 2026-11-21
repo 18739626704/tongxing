@@ -268,22 +268,18 @@ public final class MainActivity extends Activity {
         label(content, registering ? "创建自托管账号" : "登录到自己的服务器", 16, MUTED);
         gap(content, 18);
         LinearLayout form = card(content);
-        EditText address = field(form, "服务器 HTTPS 地址", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        EditText address = field(form, "服务器域名或 IP 地址", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         address.setText(api.savedBase());
         EditText username = field(form, "用户名", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         EditText password = field(form, "密码", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        EditText name = registering ? field(form, "昵称", InputType.TYPE_CLASS_TEXT) : null;
-        EditText enrollment = registering ? field(form, "服务器注册口令",
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD) : null;
         hint = label(form, "", 14, MUTED);
         button(form, registering ? "注册并登录" : "登录", true, () -> {
             String host = address.getText().toString();
             String user = username.getText().toString();
             String pass = password.getText().toString();
-            String display = name == null ? null : name.getText().toString();
-            String secret = enrollment == null ? null : enrollment.getText().toString();
+            boolean register = registering;
             run(() -> {
-                api.authenticate(host, user, pass, display, secret);
+                api.authenticate(host, user, pass, register);
                 return null;
             }, ignored -> {
                 authenticated = true;

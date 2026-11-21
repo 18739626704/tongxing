@@ -37,6 +37,18 @@ import static org.robolectric.Shadows.shadowOf;
 @Config(sdk = 35, application = Application.class)
 public class MainActivityTest {
     @Test
+    public void serverAddressDefaultsToHttpsForDomainsAndIps() throws Exception {
+        assertEquals("https://share.example.com", Api.validateBase(" share.example.com/ "));
+        assertEquals("https://192.0.2.10:8443", Api.validateBase("192.0.2.10:8443"));
+        try {
+            Api.validateBase("http://share.example.com");
+            fail("Remote HTTP should be refused");
+        } catch (java.io.IOException expected) {
+            assertTrue(expected.getMessage().contains("HTTPS"));
+        }
+    }
+
+    @Test
     @Config(qualifiers = "w360dp-h740dp")
     public void signsInUpdatesPartnerStatusAndShowsDailyTrack() throws Exception {
         Api.get(RuntimeEnvironment.getApplication()).clearSession();
@@ -205,7 +217,7 @@ public class MainActivityTest {
             Application app = RuntimeEnvironment.getApplication();
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.POST_NOTIFICATIONS);
             Api api = Api.get(app);
-            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
             var controller = Robolectric.buildService(LocationSharing.class).create();
             try {
                 LocationSharing service = controller.get();
@@ -282,7 +294,7 @@ public class MainActivityTest {
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION);
             var manager = app.getSystemService(LocationManager.class);
             shadowOf(manager).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
-            Api.get(app).authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+            Api.get(app).authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
                 var started = new AtomicReference<Intent>();
                 await(() -> {
@@ -332,7 +344,7 @@ public class MainActivityTest {
             var location = app.getSystemService(LocationManager.class);
             shadowOf(location).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
             Api api = Api.get(app);
-            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
             api.acceptUnifiedConsent(pair);
             api.requestSuspension();
             api.stopSharing();
@@ -386,7 +398,7 @@ public class MainActivityTest {
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION);
             shadowOf(app.getSystemService(LocationManager.class)).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
             var api = Api.get(app);
-            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
 
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
                 await(() -> org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() != null);

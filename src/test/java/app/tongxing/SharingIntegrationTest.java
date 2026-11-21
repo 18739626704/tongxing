@@ -21,15 +21,28 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.datasource.url=${TEST_DB_URL:jdbc:h2:mem:tongxing;MODE=MySQL;DB_CLOSE_DELAY=-1}",
         "spring.datasource.username=${TEST_DB_USER:sa}", "spring.datasource.password=${TEST_DB_PASSWORD:}",
         "server.servlet.session.cookie.secure=false",
-        "tongxing.enrollment-key=integration-test-enrollment-key",
         "AMAP_ANDROID_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "AMAP_WEB_SERVICE_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 })
 class SharingIntegrationTest {
     private static final String PASSWORD = "integration-test-password";
-    private static final String ENROLLMENT = "integration-test-enrollment-key";
     @LocalServerPort int port;
     final ObjectMapper json = new ObjectMapper();
+
+    @Test
+    void registrationNeedsOnlyUsernameAndPasswordAndStillAcceptsOldClients() throws Exception {
+        Client client = new Client();
+        client.mutate("POST", "/register", Map.of("username", "minimal", "password", PASSWORD), 201);
+        client.mutate("POST", "/register", Map.of("username", "minimal", "password", PASSWORD), 409);
+        client.login("minimal");
+        assertThat(client.overview().at("/self/displayName").asText()).isEqualTo("minimal");
+
+        Client old = new Client();
+        old.mutate("POST", "/register", Map.of("username", "old_client", "password", PASSWORD,
+                "displayName", "Original name", "enrollmentKey", "legacy-placeholder"), 201);
+        old.login("old_client");
+        assertThat(old.overview().at("/self/displayName").asText()).isEqualTo("Original name");
+    }
 
     @Test
     void onlyAuthenticatedClientsReceiveTheAndroidMapConfiguration() throws Exception {
@@ -394,7 +407,11 @@ class SharingIntegrationTest {
         void signIn(String name) throws Exception {
             String username = name.toLowerCase(java.util.Locale.ROOT) + UUID.randomUUID().toString().substring(0, 8);
             mutate("POST", "/register", Map.of("username", username,
-                    "password", PASSWORD, "displayName", name, "enrollmentKey", ENROLLMENT), 201);
+                    "password", PASSWORD, "displayName", name), 201);
+            login(username);
+        }
+
+        void login(String username) throws Exception {
             HttpResponse<String> login = send("POST", "/login", "username=" + username + "&password=" + PASSWORD,
                     "application/x-www-form-urlencoded", token());
             assertThat(login.statusCode()).isEqualTo(204);

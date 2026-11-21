@@ -10,17 +10,16 @@
 cp .env.example .env
 openssl rand -hex 24
 openssl rand -hex 24
-openssl rand -hex 24
 ```
 
-编辑 `.env`，分别填入三次生成的随机值。
+编辑 `.env`，将两次生成的随机值分别填入两个数据库密码字段。
 
 | 变量 | 填什么 |
 | --- | --- |
 | `DOMAIN` | 服务域名，例如 `share.example.com`，不要加 `https://` |
 | `DB_PASSWORD` | 同行专用 MySQL 用户的密码 |
 | `DB_ROOT_PASSWORD` | MySQL 管理员密码，与应用密码不同 |
-| `ENROLLMENT_KEY` | 至少 24 字节的注册口令，只发给要在此实例注册的人 |
+| `REGISTRATION_ENABLED` | 默认 `true`，设为 `false` 可关闭新增注册 |
 | `AMAP_ANDROID_KEY` | 可选，标准 APK 使用的 Android 平台地图 SDK Key |
 | `AMAP_WEB_SERVICE_KEY` | 可选，高德 Web 服务 Key，用于到达或离开事件的地点名称 |
 | `FCM_SERVICE_ACCOUNT_JSON` | 可选，开启 FCM 的 Firebase 服务账号 JSON，保存为一行 |
@@ -42,10 +41,16 @@ curl -fsS https://share.example.com/api/health
 | `DB_URL` | `jdbc:mysql://<mysql-host>:3306/<database>` |
 | `DB_USER` | MySQL 用户 |
 | `DB_PASSWORD` | MySQL 密码 |
-| `ENROLLMENT_KEY` | 注册口令 |
+| `REGISTRATION_ENABLED` | 可选，默认允许注册 |
 | 地图与推送 | 参照上表的可选变量 |
 
-已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.0.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
+已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.2.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
+
+## 手机注册
+
+0.7.2 起，输入服务器域名或 IP、用户名和密码即可注册。省略协议时客户端会补上 `https://`。正式服务器需要可信 HTTPS 证书。若使用 IP，证书也必须覆盖该 IP。新账号默认以用户名作为显示名。服务器默认允许新账号注册。仅供私用的实例在双方注册后，可将 `REGISTRATION_ENABLED` 设为 `false` 并重启服务，已有账号仍可登录。
+
+从 0.7.1 或更早版本升级时，可以从环境变量中移除旧的 `ENROLLMENT_KEY`。新版服务端会忽略旧客户端仍然发送的该字段。
 
 ## 可选配置
 

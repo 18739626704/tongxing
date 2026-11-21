@@ -55,8 +55,11 @@ jobs:
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           tag="v$version"
           apk="tongxing-$version.apk"
-          [[ -f "downloads/$apk" ]] || exit 0
           if gh release view "$tag" >/dev/null 2>&1; then
+            exit 0
+          fi
+          if [[ ! -f "downloads/$apk" ]]; then
+            echo "::notice::Publish the signed APK and SHA256SUMS on GitHub Releases for $tag."
             exit 0
           fi
           (cd downloads && sha256sum --strict -c SHA256SUMS)

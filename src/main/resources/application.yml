@@ -24,4 +24,4 @@ mybatis-plus:
     db-config:
       id-type: input
 tongxing:
-  enrollment-key: ${ENROLLMENT_KEY:}
+  registration-enabled: ${REGISTRATION_ENABLED:true}

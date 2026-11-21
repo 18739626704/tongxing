@@ -15,8 +15,7 @@ import org.springframework.web.bind.annotation.*;
 class SharingController {
     record Registration(@NotBlank @Pattern(regexp = "[a-z0-9_]{3,32}") String username,
                         @NotBlank @Size(min = 10, max = 64) String password,
-                        @NotBlank @Size(max = 32) String displayName,
-                        @NotBlank @Size(max = 256) String enrollmentKey) {}
+                        @Size(max = 32) String displayName) {}
     record Accept(@NotBlank @Pattern(regexp = "[0-9A-Fa-f]{16}") String code) {}
     record Consent(@NotNull Boolean enabled, UUID pairId, Boolean locationUnavailable) {}
     record Reading(@NotNull UUID id, @NotNull UUID shareKey,
