@@ -216,6 +216,7 @@ final class AppModel {
     }
 
     func openSos(_ event: Event) async -> Bool {
+        guard let expectedPair = pair else { return false }
         let point: Point? = await perform { client in
             let point: Point = try await client.get("sos/\(event.id)")
             if event.incoming {
@@ -223,6 +224,7 @@ final class AppModel {
             }
             return point
         }
+        guard expectedPair == pair else { return false }
         sosPoint = point
         return point != nil
     }

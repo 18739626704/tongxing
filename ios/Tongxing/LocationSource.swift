@@ -19,9 +19,10 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         super.init()
         UIDevice.current.isBatteryMonitoringEnabled = true
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         manager.distanceFilter = kCLDistanceFilterNone
-        manager.pausesLocationUpdatesAutomatically = true
+        // A system pause would require the app to restart tracking before movement can be reported again.
+        manager.pausesLocationUpdatesAutomatically = false
         monitor.pathUpdateHandler = { [weak self] path in
             let network: String
             if path.status != .satisfied { network = "OFFLINE" }
