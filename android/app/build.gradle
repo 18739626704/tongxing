@@ -2,7 +2,8 @@ plugins {
     id 'com.android.application'
 }
 
-def amapEnabled = providers.gradleProperty('tongxingAmap').map { it.toBoolean() }.getOrElse(false)
+// The standard APK contains both renderers. Opt out only for a lightweight APK.
+def amapEnabled = providers.gradleProperty('tongxingAmap').map { it.toBoolean() }.getOrElse(true)
 def amapSdk = providers.gradleProperty('tongxingAmapSdk').orNull
 def firebaseConfig = providers.gradleProperty('tongxingFirebaseConfig').orNull
 def firebase = firebaseConfig ? new groovy.json.JsonSlurper().parse(file(firebaseConfig)) : null
@@ -22,8 +23,8 @@ android {
         applicationId 'app.tongxing.mobile'
         minSdk 26
         targetSdk 35
-        versionCode 18
-        versionName '0.7.0'
+        versionCode 19
+        versionName '0.7.1'
         if (firebase) {
             resValue 'string', 'google_app_id', firebaseClient.client_info.mobilesdk_app_id
             resValue 'string', 'google_api_key', firebaseClient.api_key[0].current_key

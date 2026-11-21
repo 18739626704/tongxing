@@ -2,14 +2,14 @@
 
 同行是可以自托管的双人位置与状态共享应用。两个人安装 Android 客户端并在同一台服务端注册后，可以通过邀请码建立绑定，查看对方位置和足迹，发送消息、报平安和 SOS。
 
-[下载 Android APK](downloads/tongxing-0.7.0.apk?raw=true) · [GitHub Releases](../../releases) · [部署教程](docs/deploy.md) · [开发与构建](docs/development.md) · [隐私与数据](docs/privacy.md) · [第三方组件](docs/third-party.md)
+[下载 0.7.0 轻量 APK](downloads/tongxing-0.7.0.apk?raw=true) · [GitHub Releases](../../releases) · [部署教程](docs/deploy.md) · [开发与构建](docs/development.md) · [隐私与数据](docs/privacy.md) · [第三方组件](docs/third-party.md)
 
 ## 开始使用
 
 1. 按[部署教程](docs/deploy.md)运行服务端，准备 HTTPS 地址和注册口令。
 2. 两台 Android 8.0 或更新的手机安装 APK，填入相同的服务器 HTTPS 地址，各自注册账号。
 3. 一方在「设置 → 伴侣绑定」生成邀请码，另一方在同一入口输入。
-4. 按应用提示授权。基础安装包用系统定位，地图默认显示本地坐标网格。需要街道底图时，在「设置 → 权限与共享」卡片中选择「开启街道底图」。
+4. 按应用提示授权。从 0.7.1 起，标准构建打开地图即显示街道底图。有高德 Android Key 且用户已同意高德隐私说明时，自动使用高德，否则使用 OpenStreetMap。上方 0.7.0 下载为旧版轻量包，使用本规则请安装 0.7.1 或更新版本。
 
 APK 已签名，可从 [SHA256SUMS](downloads/SHA256SUMS)核对完整性。安装包可以连接任意兼容的自托管实例。服务端随本仓库提供，不提供公共实例和公共账号。
 
@@ -18,7 +18,7 @@ APK 已签名，可从 [SHA256SUMS](downloads/SHA256SUMS)核对完整性。安�
 - 绑定双方的位置、带精度提示的地图、足迹和停留时间轴。
 - 应用内消息、报平安、SOS 位置与查看回执，以及地点和行程提醒。
 - 在双方授权后共享设备状态和应用使用时长。
-- 基础安装包支持 OpenStreetMap 街道底图。自定义构建可选接入高德地图或 Firebase Cloud Messaging。
+- 标准构建同时支持高德与 OpenStreetMap。Firebase Cloud Messaging 和不带高德 SDK 的轻量包可按需构建。
 
 ## 源码目录
 
