@@ -42,13 +42,17 @@ class SharingController {
 
     record Message(@NotBlank @Size(max = 500) String text) {}
     record Routine(@NotNull Boolean resting) {}
+    record Sos(@NotNull Boolean includeLocation) {}
+    record CheckIn(@NotNull CheckInKind kind) {}
+    enum CheckInKind { GOOD_MORNING, GOOD_NIGHT, ARRIVED, HEADING_OUT }
     record PlaceInput(@NotBlank @Size(max = 40) String name,
                       @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
                       @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
                       @NotNull @Min(100) @Max(3000) Integer radius) {}
+    record PlaceSettings(@NotBlank @Size(max = 40) String name, @NotNull @Min(100) @Max(3000) Integer radius) {}
     record Place(String id, String name, double latitude, double longitude, int radius,
                  Boolean inside, Long observedAt) {}
-    record Event(long id, String kind, String text, String sender, boolean incoming, long createdAt) {}
+    record Event(long id, String kind, String text, String sender, boolean incoming, long createdAt, boolean hasLocation) {}
     record Feed(String pairId, List<Event> events) {}
     record PushToken(@NotBlank @Size(max = 512) @Pattern(regexp = "[a-zA-Z0-9:_-]+") String token) {}
     record DeleteAccount(@NotBlank @Size(max = 64) String password) {}
@@ -122,7 +126,26 @@ class SharingController {
 
     @PostMapping("/sos")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    void sos(Principal user) { sharing.interact(user.getName(), "SOS", "请尽快联系我，我需要帮助"); }
+    void sos(Principal user, @Valid @RequestBody(required = false) Sos options) {
+        sharing.sos(user.getName(), options != null && options.includeLocation());
+    }
+
+    @GetMapping("/sos/{id}")
+    Point sosLocation(Principal user, @PathVariable @Positive long id) {
+        return sharing.sosLocation(user.getName(), id);
+    }
+
+    @PostMapping("/check-ins")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void checkIn(Principal user, @Valid @RequestBody CheckIn checkIn) {
+        String message = switch (checkIn.kind()) {
+            case GOOD_MORNING -> "早上好";
+            case GOOD_NIGHT -> "晚安";
+            case ARRIVED -> "我到了";
+            case HEADING_OUT -> "我出发了";
+        };
+        sharing.interact(user.getName(), "CHECK_IN", message);
+    }
 
     @GetMapping("/places")
     List<Place> places(Principal user) { return sharing.places(user.getName()); }
@@ -130,6 +153,12 @@ class SharingController {
     @PostMapping("/places")
     @ResponseStatus(HttpStatus.CREATED)
     void place(Principal user, @Valid @RequestBody PlaceInput place) { sharing.addPlace(user.getName(), place); }
+
+    @PutMapping("/places/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void editPlace(Principal user, @PathVariable UUID id, @Valid @RequestBody PlaceSettings options) {
+        sharing.editPlace(user.getName(), id, options);
+    }
 
     @DeleteMapping("/places/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)

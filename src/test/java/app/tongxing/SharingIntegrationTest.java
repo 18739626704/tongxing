@@ -213,6 +213,76 @@ class SharingIntegrationTest {
         alice.mutate("PUT", "/app-usage", report, 409);
     }
 
+    @Test
+    void checkInsAndLowBatteryReachOnlyPartnerAndSosLocationRequiresLiveConsent() throws Exception {
+        Client alice = new Client();
+        Client bob = new Client();
+        Client outsider = new Client();
+        alice.signIn("Alice");
+        bob.signIn("Bob");
+        outsider.signIn("Outsider");
+        String invite = alice.mutate("POST", "/invite", "", 200).path("code").asText();
+        bob.mutate("POST", "/pair", Map.of("code", invite), 204);
+
+        alice.mutate("POST", "/places", Map.of("name", "家", "radius", 250,
+                "latitude", 34.76, "longitude", 113.65), 201);
+        String placeId = json.readTree(alice.get("/places").body()).at("/0/id").asText();
+        Map<String, Object> edit = Map.of("name", "新家", "radius", 400);
+        bob.mutate("PUT", "/places/" + placeId, edit, 404);
+        alice.mutate("PUT", "/places/" + placeId, edit, 204);
+        var place = json.readTree(alice.get("/places").body()).get(0);
+        assertThat(place.path("name").asText()).isEqualTo("新家");
+        assertThat(place.path("radius").asInt()).isEqualTo(400);
+        assertThat(place.path("latitude").asDouble()).isEqualTo(34.76);
+
+        outsider.mutate("POST", "/check-ins", Map.of("kind", "GOOD_NIGHT"), 409);
+        alice.mutate("POST", "/check-ins", Map.of("kind", "INVALID"), 400);
+        alice.mutate("POST", "/check-ins", Map.of("kind", "ARRIVED"), 204);
+        assertThat(bob.feed().at("/events/0/text").asText()).isEqualTo("我到了");
+
+        long now = System.currentTimeMillis();
+        String aliceKey = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        var reading = new java.util.HashMap<>(sample(aliceKey, 34.76, now - 5000));
+        reading.put("battery", 15);
+        reading.put("charging", false);
+        reading.put("networkType", "WIFI");
+        alice.mutate("POST", "/positions", reading, 204);
+        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("CHECK_IN");
+        alice.mutate("PUT", "/device-status-sharing", Map.of("enabled", true), 204);
+        reading.put("battery", 17);
+        reading.put("id", UUID.randomUUID().toString());
+        reading.put("recordedAt", now - 4000);
+        alice.mutate("POST", "/positions", reading, 204);
+        reading.put("battery", 14);
+        reading.put("id", UUID.randomUUID().toString());
+        reading.put("recordedAt", now - 3000);
+        alice.mutate("POST", "/positions", reading, 204);
+        assertThat(bob.feed().at("/events/0/text").asText()).isEqualTo("电量仅剩 14%");
+        reading.put("id", UUID.randomUUID().toString());
+        reading.put("recordedAt", now - 2000);
+        alice.mutate("POST", "/positions", reading, 204);
+        assertThat(bob.feed().path("events").size()).isEqualTo(2);
+
+        alice.mutate("POST", "/sos", Map.of("includeLocation", true), 204);
+        var help = bob.feed().at("/events/0");
+        assertThat(help.path("hasLocation").asBoolean()).isTrue();
+        assertThat(help.has("latitude")).isFalse();
+        String url = "/sos/" + help.path("id").asLong();
+        var location = bob.get(url);
+        assertThat(location.statusCode()).isEqualTo(200);
+        assertThat(json.readTree(location.body()).path("latitude").asDouble()).isEqualTo(34.76);
+        assertThat(outsider.get(url).statusCode()).isEqualTo(404);
+        alice.mutate("PUT", "/sharing", Map.of("enabled", false), 200);
+        alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200);
+        assertThat(bob.get(url).statusCode()).isEqualTo(404);
+        assertThat(bob.feed().at("/events/0/hasLocation").asBoolean()).isFalse();
+
+        String bobKey = bob.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        bob.mutate("POST", "/positions", sample(bobKey, 34.78, now - 360_000), 204);
+        bob.mutate("POST", "/sos", Map.of("includeLocation", true), 204);
+        assertThat(alice.feed().at("/events/0/hasLocation").asBoolean()).isFalse();
+    }
+
     private Map<String, Object> sample(String shareKey, double latitude, long time) {
         return Map.of("id", UUID.randomUUID().toString(), "shareKey", shareKey,
                 "latitude", latitude, "longitude", 113.65, "accuracy", 8,
