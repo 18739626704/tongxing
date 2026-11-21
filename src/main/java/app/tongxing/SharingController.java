@@ -18,7 +18,7 @@ class SharingController {
                         @NotBlank @Size(max = 32) String displayName,
                         @NotBlank @Size(max = 256) String enrollmentKey) {}
     record Accept(@NotBlank @Pattern(regexp = "[0-9A-Fa-f]{16}") String code) {}
-    record Consent(@NotNull Boolean enabled, UUID pairId) {}
+    record Consent(@NotNull Boolean enabled, UUID pairId, Boolean locationUnavailable) {}
     record Reading(@NotNull UUID id, @NotNull UUID shareKey,
                    @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
                    @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
@@ -31,7 +31,7 @@ class SharingController {
     record Point(double latitude, double longitude, double accuracy, int battery, boolean charging, long recordedAt) {}
     record Status(String displayName, boolean sharing, Point lastLocation, Integer screenMinutes, String screenDate,
                   boolean usageEnabled, boolean appUsageEnabled, boolean deviceStatusEnabled, DeviceStatus device,
-                  boolean journeyEnabled, JourneyStatus journey, boolean liveScreenEnabled, ScreenStatus liveScreen) {}
+                  boolean journeyEnabled, JourneyStatus journey, boolean liveScreenEnabled, ScreenStatus liveScreen, boolean locationUnavailable) {}
     record JourneyStatus(String state, long since, long updatedAt) {}
     enum ScreenState { OFF, LOCKED, UNLOCKED }
     record ScreenStatus(ScreenState state, long updatedAt) {}
@@ -49,9 +49,19 @@ class SharingController {
     record Message(@NotBlank @Size(max = 500) String text) {}
     record Routine(@NotNull Boolean resting) {}
     record Sos(@NotNull Boolean includeLocation) {}
+    record SosRequest(@NotNull UUID requestId, @NotNull Boolean includeLocation) {}
+    record SosCreated(long id) {}
+    record SosReceipt(@NotNull Boolean viewed) {}
+    record Coordinates(@NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
+                       @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude) {}
+    record FreshFix(@NotNull @Valid Coordinates point,
+                    @NotNull @DecimalMin("0") @DecimalMax("1000") Double accuracy, @NotNull Long recordedAt) {}
+    record SavedPlace(@NotBlank @Size(max = 40) String name, @NotNull @Valid Coordinates point) {}
+    record ArrivalWatch(@NotNull Boolean enabled) {}
+    record Place(String id, String name, double latitude, double longitude, boolean watching, boolean armed) {}
     record CheckIn(@NotNull CheckInKind kind) {}
     enum CheckInKind { GOOD_MORNING, GOOD_NIGHT, ARRIVED, HEADING_OUT }
-    record Event(long id, String kind, String text, String sender, boolean incoming, long createdAt, boolean hasLocation) {}
+    record Event(long id, String kind, String text, String sender, boolean incoming, long createdAt, boolean hasLocation, Long receivedAt, Long viewedAt) {}
     record Feed(String pairId, List<Event> events) {}
     record PushToken(@NotBlank @Size(max = 512) @Pattern(regexp = "[a-zA-Z0-9:_-]+") String token) {}
     record DeleteAccount(@NotBlank @Size(max = 64) String password) {}
@@ -90,7 +100,7 @@ class SharingController {
 
     @PutMapping("/sharing")
     ShareState share(Principal user, @Valid @RequestBody Consent consent) {
-        return sharing.consent(user.getName(), consent.enabled(), consent.pairId());
+        return sharing.consent(user.getName(), consent.enabled(), consent.pairId(), Boolean.TRUE.equals(consent.locationUnavailable()));
     }
 
     @PostMapping("/positions")
@@ -128,6 +138,41 @@ class SharingController {
     void sos(Principal user, @Valid @RequestBody(required = false) Sos options) {
         sharing.sos(user.getName(), options != null && options.includeLocation());
     }
+
+    @PostMapping("/sos/requests")
+    SosCreated createSos(Principal user, @Valid @RequestBody SosRequest request) {
+        return sharing.createSos(user.getName(), request.includeLocation(), request.requestId().toString());
+    }
+
+    @PutMapping("/sos/{id}/receipt")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void sosReceipt(Principal user, @PathVariable @Positive long id, @Valid @RequestBody SosReceipt receipt) {
+        sharing.sosReceipt(user.getName(), id, receipt.viewed());
+    }
+
+    @PutMapping("/sos/{id}/fix")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void sosFix(Principal user, @PathVariable @Positive long id, @Valid @RequestBody FreshFix fix) {
+        sharing.sosFix(user.getName(), id, fix);
+    }
+
+    @GetMapping("/saved-places")
+    List<Place> savedPlaces(Principal user) { return sharing.savedPlaces(user.getName()); }
+
+    @PostMapping("/saved-places")
+    Place savePlace(Principal user, @Valid @RequestBody SavedPlace place) {
+        return sharing.savePlace(user.getName(), place);
+    }
+
+    @PutMapping("/saved-places/{id}/watch")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void watchPlace(Principal user, @PathVariable UUID id, @Valid @RequestBody ArrivalWatch watch) {
+        sharing.watchPlace(user.getName(), id.toString(), watch.enabled());
+    }
+
+    @DeleteMapping("/saved-places/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void deletePlace(Principal user, @PathVariable UUID id) { sharing.deletePlace(user.getName(), id.toString()); }
 
     @GetMapping("/sos/{id}")
     Point sosLocation(Principal user, @PathVariable @Positive long id) {

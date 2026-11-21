@@ -10,6 +10,7 @@ public class Member {
     public String passwordHash;
     public String pairId;
     public boolean sharing;
+    public boolean locationUnavailable;
     public String shareKey;
     public boolean usageEnabled;
     public boolean appUsageEnabled;

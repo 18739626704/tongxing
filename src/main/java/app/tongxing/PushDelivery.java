@@ -56,7 +56,7 @@ final class PushDelivery {
                     FROM push_device d JOIN member m ON m.id = d.member_id
                     JOIN companion_event e ON e.pair_id = m.pair_id AND e.sender_id <> m.id
                     WHERE e.id > d.delivered_through AND e.created_at >= ?
-                    GROUP BY d.token, d.member_id ORDER BY last_id LIMIT 10
+                    GROUP BY d.token, d.member_id ORDER BY urgent DESC, last_id LIMIT 10
                     """, (rs, row) -> new Wakeup(rs.getString("token"), rs.getString("member_id"),
                     rs.getLong("last_id"), rs.getBoolean("urgent")),
                     System.currentTimeMillis() - Duration.ofHours(1).toMillis());
@@ -75,7 +75,7 @@ final class PushDelivery {
         String body = json.writeValueAsString(Map.of("message", Map.of(
                 "token", wakeup.token(), "data", Map.of("kind", "feed"),
                 "android", Map.of("priority", wakeup.urgent() ? "HIGH" : "NORMAL", "ttl", "3600s",
-                        "collapse_key", "companion_feed"))));
+                        "collapse_key", wakeup.urgent() ? "companion_sos" : "companion_feed"))));
         var response = http.send(HttpRequest.newBuilder(endpoint).timeout(Duration.ofSeconds(8))
                 .header("Authorization", "Bearer " + credentials.getAccessToken().getTokenValue())
                 .header("Content-Type", "application/json")

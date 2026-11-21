@@ -24,6 +24,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 class SharingService {
+    private static final int PLACE_RADIUS_METRES = 120;
     private static final long DAY = Duration.ofDays(1).toMillis();
     private static final long RETENTION = 30 * DAY;
     private static final long INVITATION_LIFETIME = Duration.ofMinutes(15).toMillis();
@@ -121,10 +122,11 @@ class SharingService {
         setPair(self, null);
         samples.delete(new QueryWrapper<PositionSample>().eq("pair_id", self.pairId));
         jdbc.update("DELETE FROM companion_event WHERE pair_id = ?", self.pairId);
+        jdbc.update("DELETE FROM companion_place WHERE pair_id = ?", self.pairId);
     }
 
     @Transactional
-    public ShareState consent(String username, boolean enabled, UUID pairId) {
+    public ShareState consent(String username, boolean enabled, UUID pairId, boolean locationUnavailable) {
         guard.lock();
         Member self = current(username);
         checkPair(self, pairId);
@@ -134,9 +136,12 @@ class SharingService {
         }
         String shareKey = enabled ? id() : null;
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
-                .set("sharing", enabled).set("share_key", shareKey));
+                .set("sharing", enabled).set("share_key", shareKey)
+                .set("location_unavailable", !enabled && locationUnavailable));
         if (!enabled) {
             clearInsights(self.id);
+            jdbc.update("UPDATE companion_place SET watching = FALSE, armed = FALSE, inside_at = NULL WHERE pair_id = ? AND owner_id <> ?",
+                    self.pairId, self.id);
             jdbc.update("UPDATE companion_event SET sos_sample_id = NULL WHERE sender_id = ? AND sos_sample_id IS NOT NULL", self.id);
         }
         return new ShareState(shareKey);
@@ -195,7 +200,10 @@ class SharingService {
                     """, reading.screenMinutes(), reading.screenDate(), self.id,
                     reading.screenDate(), reading.screenDate(), reading.screenMinutes());
         }
-        if (self.journeyEnabled && now - sample.recordedAt <= 120_000) recordJourney(self, sample, Boolean.TRUE.equals(reading.amapPlaceNames()));
+        if (now - sample.recordedAt <= 120_000) {
+            if (self.journeyEnabled) recordJourney(self, sample, Boolean.TRUE.equals(reading.amapPlaceNames()));
+            recordArrivals(self, sample);
+        }
     }
 
     @Transactional
@@ -229,9 +237,11 @@ class SharingService {
         guard.lock();
         Member self = current(username);
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
-                .set("sharing", false).set("share_key", null));
+                .set("sharing", false).set("share_key", null).set("location_unavailable", false));
         samples.delete(new QueryWrapper<PositionSample>().eq("member_id", self.id));
         clearInsights(self.id);
+        jdbc.update("UPDATE companion_place SET watching = FALSE, armed = FALSE, inside_at = NULL WHERE pair_id = ? AND owner_id <> ?",
+                self.pairId, self.id);
         jdbc.update("DELETE FROM companion_event WHERE sender_id = ? AND kind IN ('ARRIVE', 'LEAVE', 'AUTO_ARRIVE', 'AUTO_LEAVE', 'NETWORK', 'CHARGING', 'MOTION', 'LOW_BATTERY')", self.id);
     }
 
@@ -255,16 +265,17 @@ class SharingService {
         long now = System.currentTimeMillis();
         List<Event> events = jdbc.query("""
                 SELECT e.id, e.kind, e.body, m.display_name, e.sender_id, e.created_at,
-                       p.id AS fix_id
+                       p.id AS fix_id, e.received_at, e.viewed_at
                 FROM companion_event e JOIN member m ON e.sender_id = m.id
                 LEFT JOIN position_sample p ON p.id = e.sos_sample_id AND p.pair_id = e.pair_id
                     AND p.member_id = m.id AND m.sharing = TRUE AND e.created_at >= ?
                 WHERE e.pair_id = ? AND e.id < ? AND (e.kind <> 'NETWORK' OR e.body IN ('WIFI', 'MOBILE')) AND e.created_at >= ?
+                    AND (e.kind <> 'PLACE_ARRIVAL' OR e.sender_id <> ?)
                 ORDER BY e.id DESC LIMIT 80
                 """, (row, i) -> new Event(row.getLong("id"), row.getString("kind"), row.getString("body"),
                 row.getString("display_name"), !self.id.equals(row.getString("sender_id")), row.getLong("created_at"),
-                row.getString("fix_id") != null),
-                now - DAY, self.pairId, before == null ? Long.MAX_VALUE : before, now - RETENTION);
+                row.getString("fix_id") != null, row.getObject("received_at", Long.class), row.getObject("viewed_at", Long.class)),
+                now - DAY, self.pairId, before == null ? Long.MAX_VALUE : before, now - RETENTION, self.id);
         return new Feed(self.pairId, events);
     }
 
@@ -279,17 +290,88 @@ class SharingService {
 
     @Transactional
     public void sos(String username, boolean includeLocation) {
+        createSos(username, includeLocation, id());
+    }
+
+    @Transactional
+    public SosCreated createSos(String username, boolean includeLocation, String request) {
         guard.lock();
         Member self = current(username);
+        if (self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        var existing = jdbc.query("""
+                SELECT id FROM companion_event WHERE sender_id = ? AND pair_id = ? AND client_request = ?
+                """, (row, index) -> row.getLong("id"), self.id, self.pairId, request);
+        if (!existing.isEmpty()) return new SosCreated(existing.getFirst());
         long now = System.currentTimeMillis();
         checkInteraction(self, "SOS", now);
         PositionSample sample = includeLocation && self.sharing ? lastPoint(self, now) : null;
         String sampleId = sample != null && sample.recordedAt >= now - Duration.ofMinutes(5).toMillis()
                 && sample.recordedAt <= now && sample.accuracy <= 1000 ? sample.id : null;
-        jdbc.update("""
-                INSERT INTO companion_event(pair_id, sender_id, kind, body, created_at, sos_sample_id)
-                VALUES (?, ?, 'SOS', ?, ?, ?)
-                """, self.pairId, self.id, "请尽快联系我，我需要帮助", now, sampleId);
+        var key = new org.springframework.jdbc.support.GeneratedKeyHolder();
+        jdbc.update(connection -> {
+            var stmt = connection.prepareStatement("""
+                    INSERT INTO companion_event(pair_id, sender_id, kind, body, created_at, sos_sample_id, client_request, location_requested)
+                    VALUES (?, ?, 'SOS', ?, ?, ?, ?, ?)
+                    """, java.sql.Statement.RETURN_GENERATED_KEYS);
+            stmt.setString(1, self.pairId);
+            stmt.setString(2, self.id);
+            stmt.setString(3, "请尽快联系我，我需要帮助");
+            stmt.setLong(4, now);
+            stmt.setString(5, sampleId);
+            stmt.setString(6, request);
+            stmt.setBoolean(7, includeLocation);
+            return stmt;
+        }, key);
+        return new SosCreated(key.getKey().longValue());
+    }
+
+    @Transactional
+    public void sosReceipt(String username, long event, boolean viewed) {
+        guard.lock();
+        Member self = current(username);
+        long now = System.currentTimeMillis();
+        int changed = jdbc.update("""
+                UPDATE companion_event SET received_at = COALESCE(received_at, ?),
+                    viewed_at = CASE WHEN ? THEN COALESCE(viewed_at, ?) ELSE viewed_at END
+                WHERE id = ? AND pair_id = ? AND sender_id <> ? AND kind = 'SOS' AND created_at >= ?
+                """, now, viewed, now, event, self.pairId, self.id, now - DAY);
+        if (changed == 0 && jdbc.queryForObject("""
+                SELECT COUNT(*) FROM companion_event WHERE id = ? AND pair_id = ?
+                    AND sender_id <> ? AND kind = 'SOS' AND created_at >= ?
+                """, Integer.class, event, self.pairId, self.id, now - DAY) == 0) {
+            throw failure(HttpStatus.NOT_FOUND, "求助已失效");
+        }
+    }
+
+    @Transactional
+    public void sosFix(String username, long event, FreshFix fix) {
+        guard.lock();
+        Member self = current(username);
+        long now = System.currentTimeMillis();
+        if (!self.sharing || self.pairId == null) throw failure(HttpStatus.CONFLICT, "位置未共享");
+        if (fix.recordedAt() < now - 120_000 || fix.recordedAt() > now + 30_000) {
+            throw failure(HttpStatus.BAD_REQUEST, "定位时间无效");
+        }
+        var previous = jdbc.query("""
+                SELECT p.recorded_at FROM companion_event e LEFT JOIN position_sample p ON p.id = e.sos_sample_id
+                WHERE e.id = ? AND e.pair_id = ? AND e.sender_id = ? AND e.kind = 'SOS' AND e.location_requested = TRUE AND e.created_at >= ?
+                """, (row, index) -> row.getObject("recorded_at", Long.class),
+                event, self.pairId, self.id, now - 120_000);
+        if (previous.isEmpty()) throw failure(HttpStatus.NOT_FOUND, "求助已失效");
+        if (previous.getFirst() != null && previous.getFirst() >= fix.recordedAt()) return;
+        var sample = new PositionSample();
+        sample.id = id();
+        sample.memberId = self.id;
+        sample.pairId = self.pairId;
+        sample.latitude = fix.point().latitude();
+        sample.longitude = fix.point().longitude();
+        sample.accuracy = fix.accuracy();
+        var last = lastPoint(self, now);
+        sample.battery = last == null ? -1 : last.battery;
+        sample.charging = last != null && last.charging;
+        sample.recordedAt = fix.recordedAt();
+        samples.insert(sample);
+        jdbc.update("UPDATE companion_event SET sos_sample_id = ? WHERE id = ?", sample.id, event);
     }
 
     @Transactional
@@ -306,6 +388,89 @@ class SharingService {
                 row.getDouble("accuracy"), row.getInt("battery"), row.getBoolean("charging"), row.getLong("recorded_at")),
                 id, self.pairId, System.currentTimeMillis() - DAY).stream().findFirst()
                 .orElseThrow(() -> failure(HttpStatus.NOT_FOUND, "求助位置已失效"));
+    }
+
+    @Transactional
+    public List<Place> savedPlaces(String username) {
+        Member self = current(username);
+        return self.pairId == null ? List.of() : placesFor(self.pairId, self.id);
+    }
+
+    private List<Place> placesFor(String pair, String owner) {
+        return jdbc.query("""
+                SELECT id, name, latitude, longitude, watching, armed FROM companion_place
+                WHERE pair_id = ? AND owner_id = ? ORDER BY name, id
+                """, (row, index) -> new Place(row.getString("id"), row.getString("name"),
+                row.getDouble("latitude"), row.getDouble("longitude"), row.getBoolean("watching"), row.getBoolean("armed")),
+                pair, owner);
+    }
+
+    @Transactional
+    public Place savePlace(String username, SavedPlace request) {
+        guard.lock();
+        Member self = current(username);
+        if (self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        if (placesFor(self.pairId, self.id).size() >= 20) throw failure(HttpStatus.CONFLICT, "最多保存 20 个地点");
+        String key = id();
+        String name = request.name().strip();
+        jdbc.update("""
+                INSERT INTO companion_place(id, pair_id, owner_id, name, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?)
+                """, key, self.pairId, self.id, name, request.point().latitude(), request.point().longitude());
+        return new Place(key, name, request.point().latitude(), request.point().longitude(), false, false);
+    }
+
+    @Transactional
+    public void watchPlace(String username, String id, boolean enabled) {
+        guard.lock();
+        Member self = current(username);
+        Place place = placesFor(self.pairId, self.id).stream().filter(p -> p.id().equals(id)).findFirst()
+                .orElseThrow(() -> failure(HttpStatus.NOT_FOUND, "地点不存在"));
+        long now = System.currentTimeMillis();
+        Member partner = partnerOf(self);
+        if (enabled && (partner == null || !partner.sharing)) {
+            throw failure(HttpStatus.CONFLICT, "对方当前未共享位置");
+        }
+        PositionSample point = enabled ? lastPoint(partner, now) : null;
+        boolean armed = point != null && now - point.recordedAt <= 240_000 && point.accuracy <= 55
+                && distanceMeters(place.latitude(), place.longitude(), point.latitude, point.longitude)
+                        > PLACE_RADIUS_METRES + point.accuracy;
+        jdbc.update("""
+                UPDATE companion_place SET watching = ?, armed = ?, inside_at = NULL, observed_at = ?
+                WHERE id = ?
+                """, enabled, armed, point == null ? now : point.recordedAt, id);
+    }
+
+    @Transactional
+    public void deletePlace(String username, String id) {
+        guard.lock();
+        Member self = current(username);
+        jdbc.update("DELETE FROM companion_place WHERE id = ? AND owner_id = ? AND pair_id = ?", id, self.id, self.pairId);
+    }
+
+    private record ArrivalPlace(String id, String name, double lat, double lng, boolean armed, Long insideAt) {}
+
+    private void recordArrivals(Member sender, PositionSample sample) {
+        if (sample.accuracy > 55) return;
+        var places = jdbc.query("""
+                SELECT id, name, latitude, longitude, armed, inside_at FROM companion_place
+                WHERE pair_id = ? AND owner_id <> ? AND watching = TRUE AND observed_at < ?
+                """, (row, index) -> new ArrivalPlace(row.getString("id"), row.getString("name"),
+                row.getDouble("latitude"), row.getDouble("longitude"), row.getBoolean("armed"),
+                row.getObject("inside_at", Long.class)), sender.pairId, sender.id, sample.recordedAt);
+        for (var place : places) {
+            double distance = distanceMeters(place.lat(), place.lng(), sample.latitude, sample.longitude);
+            boolean outside = distance > PLACE_RADIUS_METRES + sample.accuracy;
+            boolean inside = distance + sample.accuracy <= PLACE_RADIUS_METRES;
+            Long insideAt = inside && place.armed() ? place.insideAt() : null;
+            if (inside && place.armed() && (insideAt == null || sample.recordedAt - insideAt > 240_000)) {
+                insideAt = sample.recordedAt;
+            }
+            boolean arrived = insideAt != null && sample.recordedAt - insideAt >= 15_000;
+            jdbc.update("""
+                    UPDATE companion_place SET watching = ?, armed = ?, inside_at = ?, observed_at = ? WHERE id = ?
+                    """, !arrived, !arrived && (outside || place.armed()), arrived ? null : insideAt, sample.recordedAt, place.id());
+            if (arrived) addEvent(sender, "PLACE_ARRIVAL", "到达 " + place.name(), sample.recordedAt);
+        }
     }
 
     private void checkInteraction(Member self, String kind, long now) {
@@ -607,7 +772,7 @@ class SharingService {
                 sharing && member.usageEnabled ? member.screenMinutes : null,
                 sharing && member.usageEnabled ? member.screenDate : null, member.usageEnabled,
                 member.appUsageEnabled, member.deviceStatusEnabled, device,
-                member.journeyEnabled, journey, member.liveScreenEnabled, screen);
+                member.journeyEnabled, journey, member.liveScreenEnabled, screen, member.locationUnavailable);
     }
 
     private PositionSample lastPoint(Member member, long now) {
@@ -622,7 +787,7 @@ class SharingService {
 
     private void setPair(Member member, String pairId) {
         members.update(null, new UpdateWrapper<Member>().eq("id", member.id).set("pair_id", pairId)
-                .set("sharing", false).set("share_key", null)
+                .set("sharing", false).set("share_key", null).set("location_unavailable", false)
                 .set("usage_enabled", false).set("screen_minutes", null).set("screen_date", null)
                 .set("app_usage_enabled", false).set("device_status_enabled", false)
                 .set("journey_enabled", false).set("live_screen_enabled", false));

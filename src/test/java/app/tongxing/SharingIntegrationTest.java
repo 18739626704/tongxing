@@ -78,7 +78,8 @@ class SharingIntegrationTest {
         assertThat(stranger.overview().path("partner").isNull()).isTrue();
         assertThat(stranger.route(true, now - 10_000, now + 10_000).size()).isZero();
 
-        alice.mutate("PUT", "/sharing", Map.of("enabled", false), 200);
+        alice.mutate("PUT", "/sharing", Map.of("enabled", false, "locationUnavailable", true), 200);
+        assertThat(bob.overview().at("/partner/locationUnavailable").asBoolean()).isTrue();
         alice.mutate("POST", "/positions", sample(aliceKey, 34.7800, now), 409);
         assertThat(bob.overview().at("/partner/lastLocation").isNull()).isTrue();
         assertThat(bob.route(true, now - 10_000, now + 10_000).size()).isZero();
@@ -322,6 +323,62 @@ class SharingIntegrationTest {
         assertThat(bob.feed().path("events").isEmpty()).isTrue();
         alice.mutate("PUT", "/journey-sharing", Map.of("enabled", false), 204);
         assertThat(bob.overview().at("/partner/journey").isNull()).isTrue();
+    }
+
+    @Test
+    void sosIsIdempotentAndOnlyItsRecipientCanAcknowledgeIt() throws Exception {
+        Client sender = new Client();
+        Client recipient = new Client();
+        Client stranger = new Client();
+        sender.signIn("sos_sender");
+        recipient.signIn("sos_receiver");
+        stranger.signIn("sos_stranger");
+        long now = System.currentTimeMillis();
+        String code = sender.mutate("POST", "/invite", "", 200).path("code").asText();
+        recipient.mutate("POST", "/pair", Map.of("code", code), 204);
+        sender.mutate("PUT", "/sharing", Map.of("enabled", true), 200);
+        var request = Map.of("requestId", UUID.randomUUID().toString(), "includeLocation", true);
+        long id = sender.mutate("POST", "/sos/requests", request, 200).path("id").asLong();
+        assertThat(id).isPositive();
+        assertThat(sender.mutate("POST", "/sos/requests", request, 200).path("id").asLong()).isEqualTo(id);
+        String path = "/sos/" + id;
+        sender.mutate("PUT", path + "/receipt", Map.of("viewed", true), 404);
+        stranger.mutate("PUT", path + "/receipt", Map.of("viewed", true), 404);
+        recipient.mutate("PUT", path + "/receipt", Map.of("viewed", false), 204);
+        assertThat(sender.feed().at("/events/0/receivedAt").asLong()).isPositive();
+        assertThat(sender.feed().at("/events/0/viewedAt").isNull()).isTrue();
+        recipient.mutate("PUT", path + "/receipt", Map.of("viewed", true), 204);
+        recipient.mutate("PUT", path + "/receipt", Map.of("viewed", false), 204);
+        assertThat(sender.feed().at("/events/0/viewedAt").asLong()).isPositive();
+        var fix = Map.of("point", Map.of("latitude", 34.75, "longitude", 113.65), "accuracy", 8, "recordedAt", now);
+        sender.mutate("PUT", path + "/fix", fix, 204);
+        assertThat(recipient.get(path).statusCode()).isEqualTo(200);
+        assertThat(stranger.get(path).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void notifiesOnceAfterConfirmedArrivalAtASavedPlace() throws Exception {
+        Client watcher = new Client();
+        Client traveler = new Client();
+        watcher.signIn("watcher");
+        traveler.signIn("traveler");
+        String code = watcher.mutate("POST", "/invite", "", 200).path("code").asText();
+        traveler.mutate("POST", "/pair", Map.of("code", code), 204);
+        String key = traveler.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        long now = System.currentTimeMillis();
+        traveler.mutate("POST", "/positions", sample(key, 34.76, now - 60_000), 204);
+        var place = watcher.mutate("POST", "/saved-places",
+                Map.of("name", "家", "point", Map.of("latitude", 34.75, "longitude", 113.65)), 200);
+        String path = "/saved-places/" + place.path("id").asText() + "/watch";
+        traveler.mutate("PUT", path, Map.of("enabled", true), 404);
+        watcher.mutate("PUT", path, Map.of("enabled", true), 204);
+        traveler.mutate("POST", "/positions", sample(key, 34.75, now - 40_000), 204);
+        assertThat(watcher.feed().path("events").isEmpty()).isTrue();
+        traveler.mutate("POST", "/positions", sample(key, 34.75, now - 15_000), 204);
+        traveler.mutate("POST", "/positions", sample(key, 34.75, now), 204);
+        assertThat(watcher.feed().path("events").findValuesAsText("text")).containsExactly("到达 家");
+        assertThat(traveler.feed().path("events").isEmpty()).isTrue();
+        assertThat(json.readTree(watcher.get("/saved-places").body()).at("/0/watching").asBoolean()).isFalse();
     }
 
     private Map<String, Object> sample(String shareKey, double latitude, long time) {
