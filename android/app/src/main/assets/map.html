@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <link rel="stylesheet" href="leaflet.css">
+  <style>
+    html,body,#map { margin:0; width:100%; height:100%; }
+    #map { background-color:#eaf2e9; background-image:linear-gradient(#dce8de 1px,transparent 1px),linear-gradient(90deg,#dce8de 1px,transparent 1px); background-size:30px 30px; }
+    .leaflet-container { font-family:sans-serif; }
+    .leaflet-control-zoom { border:0 !important; border-radius:14px; overflow:hidden; box-shadow:0 3px 12px #183c2a24; }
+    .leaflet-control-zoom a { color:#21463a; width:36px; height:36px; }
+    .leaflet-tooltip { padding:4px 9px; color:#21463a; border:1px solid #ffffff;
+      border-radius:10px; font-weight:600; box-shadow:0 2px 8px #183c2a29; background:#fffdf9; }
+    .location-pin { box-sizing:border-box; border:3px solid #fffdf9; border-radius:50%;
+      background:#17634b; box-shadow:0 2px 7px #183c2a51; }
+    .location-pin.partner { background:#a34b50; }
+    .location-pin.past { opacity:.68; }
+    .leaflet-control-attribution a { color:#17634b; }
+  </style>
+</head>
+<body>
+<div id="map" aria-label="位置和轨迹地图"></div>
+<script src="leaflet.js"></script>
+<script>
+  const map = L.map('map', {zoomControl:false, attributionControl:false, minZoom:2, maxZoom:19}).setView([20, 0], 2);
+  L.control.zoom({position:"topright"}).addTo(map);
+  const overlays = L.layerGroup().addTo(map);
+  window.setStreetMap = function(enabled) {
+    if (!enabled) return;
+    L.control.attribution({position:'topleft', prefix:false}).addTo(map);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxNativeZoom:19,
+      attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+      updateWhenIdle:true,
+      keepBuffer:0
+    }).addTo(map);
+  };
+  let lastMode = '';
+  let pointsShown = false;
+  let lastHighlight = '';
+
+  window.updateMap = function(data) {
+    for (const corner of document.querySelectorAll('.leaflet-top')) corner.style.top = (data.top || 0) + 'px';
+    const hasData = data.points.length > 0;
+    overlays.clearLayers();
+    const points = data.points.map(point => [point.latitude, point.longitude]);
+    if (data.route) {
+      for (const [first, last] of data.paths) {
+        const path = points.slice(first, last + 1);
+        if (path.length < 2) continue;
+        L.polyline(path, {color:'#ffffff', opacity:.9, weight:7}).addTo(overlays);
+        L.polyline(path, {color:'#17634b', weight:4}).addTo(overlays);
+      }
+      for (const index of data.stops) {
+        if (index <= 0 || index >= points.length - 1) continue;
+        L.circleMarker(points[index], {radius:6, color:'#ffffff', weight:2, fillColor:'#17634b', fillOpacity:1})
+          .bindTooltip('停留区域').addTo(overlays);
+      }
+    }
+
+    data.points.forEach((point, index) => {
+      if (data.route && index !== 0 && index !== points.length - 1) return;
+      const color = point.partner ? '#a34b50' : '#17634b';
+      if (!data.route && point.accuracy > 0) {
+        L.circle(points[index], {radius:point.accuracy, color, weight:1.5, opacity:.42, fillOpacity:.08,
+          dashArray:point.past ? '4 5' : null, interactive:false}).addTo(overlays);
+      }
+      const size = data.route ? 15 : 20;
+      const icon = L.divIcon({className:'location-pin' + (point.partner ? ' partner' : '') + (point.past ? ' past' : ''),
+        iconSize:[size, size], iconAnchor:[size / 2, size / 2]});
+      const marker = L.marker(points[index], {icon, alt:point.label || '位置'}).addTo(overlays);
+      const label = document.createElement('span');
+      label.textContent = point.label;
+      marker.bindTooltip(label, {direction:'top', permanent:true, offset:[0,-6]});
+    });
+
+    const highlight = data.highlight;
+    const selected = highlight ? highlight.points.map(point => [point.latitude, point.longitude]) : [];
+    const focus = selected.length > 0;
+    if (focus) {
+      const sos = highlight.id.startsWith('sos:');
+      const color = sos ? '#bf2349' : '#df6300';
+      if (selected.length > 1) {
+        L.polyline(selected, {color:'#fff', weight:12}).addTo(overlays);
+        L.polyline(selected, {color, weight:8}).addTo(overlays);
+        L.circleMarker(selected[selected.length - 1], {radius:8, color:'#fff', fillColor:color, fillOpacity:1}).addTo(overlays);
+      } else {
+        const radius = sos ? Math.max(16, highlight.points[0].accuracy || 0) : 90;
+        L.circle(selected[0], {color, radius, weight:3, fillOpacity:.15}).addTo(overlays);
+      }
+      L.circleMarker(selected[0], {radius:9, color:'#fff', weight:3, fillColor:color, fillOpacity:1})
+        .bindTooltip(highlight.label, {permanent:true, direction:'top'}).addTo(overlays);
+    }
+    if ((focus && (lastHighlight !== highlight.id || data.recenter)) ||
+        (!focus && hasData && (!pointsShown || data.mode !== lastMode || data.recenter))) {
+      map.fitBounds(focus ? selected : points, {paddingTopLeft:[28, Math.min(data.top || 8, map.getSize().y / 3) + 18],
+        paddingBottomRight:[28, Math.min(data.bottom || 40, map.getSize().y / 3) + 18], maxZoom:focus ? 17 : 16});
+    }
+    lastHighlight = focus ? highlight.id : '';
+    pointsShown = hasData;
+    lastMode = data.mode;
+  };
+</script>
+</body>
+</html>

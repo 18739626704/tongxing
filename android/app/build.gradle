@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+}
+
+def amapEnabled = providers.gradleProperty('tongxingAmap').map { it.toBoolean() }.getOrElse(false)
+def amapSdk = providers.gradleProperty('tongxingAmapSdk').orNull
+def firebaseConfig = providers.gradleProperty('tongxingFirebaseConfig').orNull
+def firebase = firebaseConfig ? new groovy.json.JsonSlurper().parse(file(firebaseConfig)) : null
+def firebaseClient = firebase?.client?.find {
+    it.client_info.android_client_info.package_name == 'app.tongxing.mobile'
+}
+if (firebase && !firebaseClient) {
+    throw new GradleException('Firebase config must register app.tongxing.mobile')
+}
+
+android {
+    sourceSets.main.java.srcDir(firebase ? 'src/push/java' : 'src/noPush/java')
+    sourceSets.main.java.srcDir(amapEnabled ? 'src/amap/java' : 'src/noAmap/java')
+    namespace 'app.tongxing.mobile'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'app.tongxing.mobile'
+        minSdk 26
+        targetSdk 35
+        versionCode 18
+        versionName '0.7.0'
+        if (firebase) {
+            resValue 'string', 'google_app_id', firebaseClient.client_info.mobilesdk_app_id
+            resValue 'string', 'google_api_key', firebaseClient.api_key[0].current_key
+            resValue 'string', 'gcm_defaultSenderId', firebase.project_info.project_number
+            resValue 'string', 'project_id', firebase.project_info.project_id
+        }
+        testInstrumentationRunner 'android.test.InstrumentationTestRunner'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures { buildConfig true }
+    if (amapEnabled) packaging.jniLibs.useLegacyPackaging = true
+}
+
+android.testOptions.unitTests.includeAndroidResources = true
+dependencies {
+    if (amapEnabled) {
+        implementation(amapSdk ? files(amapSdk) : 'com.amap.api:3dmap-location-search:11.3.100_loc11.3.101_sea9.8.1')
+    }
+    if (firebase) implementation 'com.google.firebase:firebase-messaging:25.0.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.16.1'
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
+}

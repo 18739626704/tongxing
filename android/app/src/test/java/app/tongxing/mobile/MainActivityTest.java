@@ -1,0 +1,434 @@
+package app.tongxing.mobile;
+
+import android.Manifest;
+import android.app.Application;
+import android.content.Intent;
+import android.location.Location;
+import android.location.LocationManager;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.EditText;
+import android.widget.TextView;
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
+import java.util.ArrayList;
+import java.util.List;
+import java.time.Duration;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import org.json.JSONObject;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.Robolectric;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.annotation.Config;
+
+import static org.junit.Assert.*;
+import static org.robolectric.Shadows.shadowOf;
+
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 35, application = Application.class)
+public class MainActivityTest {
+    @Test
+    @Config(qualifiers = "w360dp-h740dp")
+    public void signsInUpdatesPartnerStatusAndShowsDailyTrack() throws Exception {
+        Api.get(RuntimeEnvironment.getApplication()).clearSession();
+        AtomicReference<String> failure = new AtomicReference<>();
+        AtomicBoolean history = new AtomicBoolean();
+        AtomicBoolean viewedSos = new AtomicBoolean();
+        try (MockWebServer server = new MockWebServer()) {
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) {
+                    String path = request.getRequestUrl().encodedPath();
+                    if (path.equals("/api/csrf")) {
+                        var csrf = reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
+                        if (request.getHeader("Cookie") == null) csrf.setHeader("Set-Cookie", "JSESSIONID=initial; Path=/; HttpOnly");
+                        return csrf;
+                    }
+                    if (path.equals("/api/login")) {
+                        boolean valid = "test-csrf".equals(request.getHeader("X-CSRF-TOKEN"))
+                                && "JSESSIONID=initial".equals(request.getHeader("Cookie"))
+                                && "username=alice&password=TestPassword123".equals(request.getBody().readUtf8());
+                        if (!valid) failure.set("Login request did not contain CSRF, session, and encoded credentials");
+                        return reply(valid ? 204 : 403, "")
+                                .setHeader("Set-Cookie", "JSESSIONID=signed-in; Path=/; HttpOnly");
+                    }
+                    if (!"JSESSIONID=signed-in".equals(request.getHeader("Cookie"))) {
+                        failure.set("Authenticated request did not use the rotated session cookie");
+                        return reply(401, "");
+                    }
+                    long now = System.currentTimeMillis();
+                    String location = "{\"latitude\":34.75,\"longitude\":113.65,\"accuracy\":8,"
+                            + "\"battery\":81,\"charging\":true,\"recordedAt\":" + now + "}";
+                    if (path.equals("/api/overview")) {
+                        return reply(200, "{\"self\":{\"displayName\":\"Alice\",\"sharing\":false},"
+                                + "\"partner\":{\"displayName\":\"Bob\",\"sharing\":true,\"lastLocation\":" + location
+                                + "},\"serverTime\":" + now + "}");
+                    }
+                    if (path.equals("/api/feed")) {
+                        var sos = Api.json("id", 999, "kind", "SOS", "text", "需要帮助", "sender", "Bob",
+                                "incoming", true, "hasLocation", true, "createdAt", now);
+                        return reply(200, Api.json("events", new org.json.JSONArray().put(sos)).toString());
+                    }
+                    if (path.equals("/api/sos/999")) return reply(200, location);
+                    if (path.equals("/api/sos/999/receipt")) {
+                        viewedSos.set(request.getBody().readUtf8().contains("\"viewed\":true"));
+                        return reply(204, "");
+                    }
+                    if (path.equals("/api/positions")) {
+                        if (!history.get()) return reply(200, "[" + location + "]");
+                        var fixes = new org.json.JSONArray();
+                        for (long offset : new long[]{30_000_000, 29_850_000, 29_655_000, 60_000, 0}) {
+                            fixes.put(Api.json("latitude", 34.75, "longitude", 113.65, "accuracy", 8,
+                                    "recordedAt", now - offset));
+                        }
+                        return reply(200, fixes.toString());
+                    }
+                    if (path.equals("/api/app-usage")) {
+                        return reply(200, "{\"date\":\"2026-11-21\",\"apps\":[{\"name\":\"地图应用\",\"seconds\":120}]}");
+                    }
+                    return reply(404, "");
+                }
+            });
+            server.start();
+            try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+                MainActivity activity = controller.get();
+                View root = activity.findViewById(android.R.id.content);
+                List<EditText> fields = views(root, EditText.class);
+                assertEquals(3, fields.size());
+                fields.get(0).setText("http://127.0.0.1:" + server.getPort());
+                fields.get(1).setText("Alice");
+                fields.get(2).setText("TestPassword123");
+                text(root, "登录").performClick();
+                await(() -> views(root, TextView.class).stream()
+                        .anyMatch(view -> view.getText().toString().contains("位置 刚刚更新 · 电量 81%")));
+                assertTrue(Api.get(RuntimeEnvironment.getApplication()).hasSession());
+                var web = views(root, android.webkit.WebView.class).get(0);
+                assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().width);
+                assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().height);
+                assertTrue(web.getParent() instanceof android.widget.FrameLayout);
+                text(root, "应用时长").performClick();
+                await(() -> org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() != null);
+                var usage = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+                assertNotNull(text(usage.getWindow().getDecorView(), "地图应用"));
+                usage.dismiss();
+                assertEquals(1, text(root, "回中心").getMaxLines());
+                assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT, text(root, "回中心").getLayoutParams().width);
+                assertEquals(1, text(root, "收起").getMaxLines());
+                text(root, "收起").performClick();
+                assertNotNull(text(root, "展开"));
+
+                views(root, TextView.class).stream().filter(view -> view.getText().toString().equals("足迹")
+                        && view.isClickable()).findFirst().orElseThrow().performClick();
+                await(() -> text(root, "当天共 1 个有效定位点") != null);
+                text(root, "今天").performClick();
+                var date = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+                assertTrue(date instanceof android.app.DatePickerDialog);
+                date.dismiss();
+                history.set(true);
+                text(root, "前一天").performClick();
+                await(() -> text(root, "查看时间轴").isEnabled());
+                text(root, "查看时间轴").performClick();
+                var timeline = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+                View timelineView = timeline.getWindow().getDecorView();
+                assertNotNull(text(timelineView, "足迹时间轴"));
+                assertTrue(views(timelineView, TextView.class).stream()
+                        .anyMatch(view -> view.getText().toString().startsWith("停留区域")));
+                var missing = views(timelineView, TextView.class).stream()
+                        .filter(view -> view.getText().toString().startsWith("期间无有效定位点")).findFirst().orElseThrow();
+                assertFalse(missing.isShown());
+                views(timelineView, TextView.class).stream()
+                        .filter(view -> view.getText().toString().startsWith("展开记录缺口")).findFirst().orElseThrow().performClick();
+                assertTrue(missing.isShown());
+                timeline.dismiss();
+                assertNull(failure.get());
+
+                text(root, "设置").performClick();
+                assertNotNull(text(root, "权限与共享"));
+                assertNull(text(root, "查看我的应用使用明细"));
+                assertNull(text(root, "饮水和就寝提醒"));
+                assertNull(text(root, "清除我的轨迹"));
+                text(root, "动态").performClick();
+                await(() -> text(root, "查看求助位置") != null);
+                text(root, "查看求助位置").performClick();
+                await(() -> text(root, "SOS 求助位置") != null);
+                assertNotNull(text(root, "返回实时地图"));
+                assertTrue(viewedSos.get());
+                assertNull(shadowOf(activity).getNextStartedActivity());
+                assertTrue(CompanionNotifications.enabled(activity));
+                var scheduler = activity.getSystemService(android.app.job.JobScheduler.class);
+                assertTrue(scheduler.getAllPendingJobs().stream().anyMatch(job ->
+                        job.getService().getClassName().equals(CompanionNotifications.class.getName())));
+            }
+        }
+    }
+
+    @Test
+    public void locationServiceRetriesTheSamePointAndStopsOnUserRequest() throws Exception {
+        String key = "13a7397b-7c39-4e86-9309-11d530f921ac";
+        ConcurrentLinkedQueue<String> uploads = new ConcurrentLinkedQueue<>();
+        AtomicBoolean paused = new AtomicBoolean();
+        AtomicBoolean checkedFeed = new AtomicBoolean();
+        AtomicBoolean incomingMessage = new AtomicBoolean();
+        try (MockWebServer server = new MockWebServer()) {
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) {
+                    return switch (request.getRequestUrl().encodedPath()) {
+                        case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
+                        case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=active; Path=/; HttpOnly");
+                        case "/api/feed" -> {
+                            checkedFeed.set(true);
+                            String events = incomingMessage.get() ? "[{\"id\":1,\"incoming\":true,\"kind\":\"MESSAGE\","
+                                    + "\"sender\":\"Bob\",\"text\":\"后台消息\",\"createdAt\":" + System.currentTimeMillis() + "}]" : "[]";
+                            yield reply(200, "{\"pairId\":\"paired\",\"events\":" + events + "}");
+                        }
+                        case "/api/positions" -> {
+                            uploads.add(request.getBody().readUtf8());
+                            yield reply(uploads.size() == 1 ? 503 : 204, "");
+                        }
+                        case "/api/sharing" -> {
+                            paused.set(request.getBody().readUtf8().contains("\"enabled\":false"));
+                            yield reply(200, "{}");
+                        }
+                        default -> reply(404, "");
+                    };
+                }
+            });
+            server.start();
+            Application app = RuntimeEnvironment.getApplication();
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.POST_NOTIFICATIONS);
+            Api api = Api.get(app);
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+            var controller = Robolectric.buildService(LocationSharing.class).create();
+            try {
+                LocationSharing service = controller.get();
+                LocationManager manager = service.getSystemService(LocationManager.class);
+                shadowOf(manager).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
+                service.onStartCommand(new Intent().putExtra(LocationSharing.KEY, key), 0, 1);
+                assertTrue(LocationSharing.running());
+                assertNotNull(shadowOf(service).getLastForegroundNotification());
+                await(checkedFeed::get);
+                incomingMessage.set(true);
+                var alarms = service.getSystemService(android.app.NotificationManager.class);
+                await(() -> {
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(21));
+                    return java.util.Arrays.stream(alarms.getActiveNotifications()).anyMatch(item -> item.getId() == 72);
+                });
+                var alert = java.util.Arrays.stream(alarms.getActiveNotifications())
+                        .filter(item -> item.getId() == 72).findFirst().orElseThrow().getNotification();
+                assertEquals("后台消息", alert.extras.getCharSequence(android.app.Notification.EXTRA_TEXT).toString());
+                assertEquals(android.app.NotificationManager.IMPORTANCE_HIGH,
+                        alarms.getNotificationChannel(alert.getChannelId()).getImportance());
+                assertTrue(uploads.isEmpty());
+
+                Location fix = new Location(LocationManager.GPS_PROVIDER);
+                fix.setLatitude(34.75);
+                fix.setLongitude(113.65);
+                fix.setAccuracy(8);
+                fix.setTime(System.currentTimeMillis());
+                fix.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos());
+                service.onLocationChanged(fix);
+                await(() -> uploads.size() == 1);
+                long expires = System.nanoTime() + Duration.ofSeconds(6).toNanos();
+                while (uploads.size() < 2 && System.nanoTime() < expires) {
+                    shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(16));
+                    Thread.sleep(30);
+                }
+                assertEquals(2, uploads.size());
+                String first = uploads.poll();
+                assertEquals(first, uploads.poll());
+                assertEquals(key, new JSONObject(first).getString("shareKey"));
+
+                service.onStartCommand(new Intent(LocationSharing.STOP), 0, 2);
+                await(() -> paused.get() && !api.pausePending());
+                assertTrue(shadowOf(service).isStoppedBySelf());
+                assertTrue(api.sharingNeedsReview());
+            } finally {
+                controller.destroy();
+            }
+        }
+    }
+
+    @Test
+    public void reopeningRestartsActiveLocationWithoutEnablingItAgain() throws Exception {
+        AtomicBoolean active = new AtomicBoolean(true);
+        ConcurrentLinkedQueue<String> sharingMethods = new ConcurrentLinkedQueue<>();
+        String key = "13a7397b-7c39-4e86-9309-11d530f921ac";
+        try (MockWebServer server = new MockWebServer()) {
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) {
+                    return switch (request.getRequestUrl().encodedPath()) {
+                        case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
+                        case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=active; Path=/; HttpOnly");
+                        case "/api/overview" -> reply(200, "{\"self\":{\"sharing\":" + active.get()
+                                + "},\"partner\":{\"displayName\":\"Bob\",\"sharing\":false}}");
+                        case "/api/sharing" -> {
+                            sharingMethods.add(request.getMethod());
+                            yield reply(200, "{\"shareKey\":\"" + key + "\"}");
+                        }
+                        default -> reply(404, "");
+                    };
+                }
+            });
+            server.start();
+            Application app = RuntimeEnvironment.getApplication();
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION);
+            var manager = app.getSystemService(LocationManager.class);
+            shadowOf(manager).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
+            Api.get(app).authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+            try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+                var started = new AtomicReference<Intent>();
+                await(() -> {
+                    Intent service = shadowOf(app).getNextStartedService();
+                    if (service == null || service.getComponent() == null
+                            || !LocationSharing.class.getName().equals(service.getComponent().getClassName())) return false;
+                    started.set(service);
+                    return true;
+                });
+                assertEquals(key, started.get().getStringExtra(LocationSharing.KEY));
+                assertEquals(List.of("GET"), new ArrayList<>(sharingMethods));
+            }
+            active.set(false);
+            try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+                View root = controller.get().findViewById(android.R.id.content);
+                await(() -> text(root, "请在「权限与共享」确认共享范围") != null);
+                assertNull(text(root, "开始共享"));
+                assertEquals(List.of("GET"), new ArrayList<>(sharingMethods));
+                assertNull(shadowOf(app).getNextStartedService());
+            }
+        }
+    }
+
+    @Test
+    public void startsAutomaticallyWhenPairWasAcceptedAndLocationIsGranted() throws Exception {
+        String pair = "27d5709f-eacb-4236-ab46-84d246764669";
+        String key = "13a7397b-7c39-4e86-9309-11d530f921ac";
+        AtomicReference<String> startBody = new AtomicReference<>();
+        try (MockWebServer server = new MockWebServer()) {
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) {
+                    return switch (request.getRequestUrl().encodedPath()) {
+                        case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
+                        case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=active; Path=/; HttpOnly");
+                        case "/api/overview" -> reply(200, "{\"self\":{\"sharing\":false},"
+                                + "\"partner\":{\"displayName\":\"Bob\"},\"pairId\":\"" + pair + "\"}");
+                        case "/api/sharing" -> {
+                            startBody.set(request.getBody().readUtf8());
+                            yield reply(200, "{\"shareKey\":\"" + key + "\"}");
+                        }
+                        default -> reply(404, "");
+                    };
+                }
+            });
+            server.start();
+            Application app = RuntimeEnvironment.getApplication();
+            var location = app.getSystemService(LocationManager.class);
+            shadowOf(location).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
+            Api api = Api.get(app);
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+            api.acceptUnifiedConsent(pair);
+            api.requestSuspension();
+            api.stopSharing();
+            assertFalse(api.sharingNeedsReview());
+            assertTrue(api.sharingSetupAccepted(pair));
+            startBody.set(null);
+            try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+                MainActivity activity = controller.get();
+                View root = activity.findViewById(android.R.id.content);
+                await(() -> text(root, "位置权限未就绪，点右上角「权限」") != null);
+                assertNull(startBody.get());
+                shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION);
+                activity.onRequestPermissionsResult(11, new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                        new int[]{android.content.pm.PackageManager.PERMISSION_GRANTED});
+                await(() -> startBody.get() != null);
+                assertEquals(pair, new JSONObject(startBody.get()).getString("pairId"));
+                await(() -> {
+                    Intent started = shadowOf(app).getNextStartedService();
+                    return started != null && key.equals(started.getStringExtra(LocationSharing.KEY));
+                });
+                assertNull(text(root, "开始共享"));
+            }
+        }
+    }
+
+    @Test
+    public void unifiedConsentEnablesJourneyAndScreenWithoutSeparateToggles() throws Exception {
+        String pair = "27d5709f-eacb-4236-ab46-84d246764669";
+        var journey = new AtomicBoolean();
+        var screen = new AtomicBoolean();
+        try (MockWebServer server = new MockWebServer()) {
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) {
+                    return switch (request.getRequestUrl().encodedPath()) {
+                        case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
+                        case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=active; Path=/; HttpOnly");
+                        case "/api/overview" -> reply(200, "{\"self\":{\"sharing\":true,\"usageEnabled\":false,"
+                                + "\"deviceStatusEnabled\":true,\"journeyEnabled\":" + journey.get()
+                                + ",\"liveScreenEnabled\":" + screen.get()
+                                + "},\"partner\":{\"displayName\":\"Bob\"},\"pairId\":\"" + pair + "\"}");
+                        case "/api/usage-sharing", "/api/app-usage-sharing", "/api/device-status-sharing" -> reply(204, "");
+                        case "/api/sharing" -> reply(200, "{\"shareKey\":\"13a7397b-7c39-4e86-9309-11d530f921ac\"}");
+                        case "/api/journey-sharing" -> { journey.set(true); yield reply(204, ""); }
+                        case "/api/live-screen-sharing" -> { screen.set(true); yield reply(204, ""); }
+                        default -> reply(404, "");
+                    };
+                }
+            });
+            server.start();
+            Application app = RuntimeEnvironment.getApplication();
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION);
+            shadowOf(app.getSystemService(LocationManager.class)).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
+            var api = Api.get(app);
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", null, null);
+
+            try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+                await(() -> org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() != null);
+                var dashboard = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+                assertFalse(journey.get());
+                assertFalse(screen.get());
+                text(dashboard.getWindow().getDecorView(), "确认权限与共享").performClick();
+                org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
+                        .getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
+                await(() -> api.unifiedConsentAccepted(pair));
+                await(() -> journey.get() && screen.get());
+                await(() -> text(dashboard.getWindow().getDecorView(), "伴侣屏幕状态  ·  已启用") != null);
+            }
+        }
+    }
+
+    private static MockResponse reply(int status, String data) {
+        return new MockResponse().setResponseCode(status).setBody(data)
+                .setHeader("Content-Type", "application/json; charset=UTF-8");
+    }
+
+    private static void await(BooleanSupplier check) throws InterruptedException {
+        long end = System.nanoTime() + 8_000_000_000L;
+        do {
+            shadowOf(Looper.getMainLooper()).idle();
+            if (check.getAsBoolean()) return;
+            Thread.sleep(30);
+        } while (System.nanoTime() < end);
+        fail("UI did not reach the expected state");
+    }
+
+    private static TextView text(View root, String expected) {
+        return views(root, TextView.class).stream().filter(view -> view.getText().toString().equals(expected))
+                .findFirst().orElse(null);
+    }
+
+    private static <T extends View> List<T> views(View root, Class<T> type) {
+        List<T> result = new ArrayList<>();
+        if (type.isInstance(root)) result.add(type.cast(root));
+        if (root instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) result.addAll(views(group.getChildAt(i), type));
+        }
+        return result;
+    }
+}

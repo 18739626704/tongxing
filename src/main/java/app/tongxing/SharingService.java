@@ -24,7 +24,6 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 class SharingService {
-    private static final int PLACE_RADIUS_METRES = 120;
     private static final long DAY = Duration.ofDays(1).toMillis();
     private static final long RETENTION = 30 * DAY;
     private static final long INVITATION_LIFETIME = Duration.ofMinutes(15).toMillis();
@@ -34,6 +33,7 @@ class SharingService {
     private final PositionSampleMapper samples;
     private final WriteGuard guard;
     private final JdbcTemplate jdbc;
+    private final SavedPlaces places;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     private final PasswordEncoder passwords;
     private final AmapPlaceNames placeNames;
@@ -43,7 +43,7 @@ class SharingService {
 
     SharingService(MemberMapper members, InvitationMapper invitations, PositionSampleMapper samples, WriteGuard guard,
                    PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json,
-                   AmapPlaceNames placeNames, @Value("${AMAP_ANDROID_KEY:}") String amapAndroidKey,
+                   AmapPlaceNames placeNames, SavedPlaces places, @Value("${AMAP_ANDROID_KEY:}") String amapAndroidKey,
                    @Value("${tongxing.enrollment-key}") String enrollmentKey) {
         this.members = members;
         this.invitations = invitations;
@@ -51,6 +51,7 @@ class SharingService {
         this.guard = guard;
         this.passwords = passwords;
         this.placeNames = placeNames;
+        this.places = places;
         String mapKey = amapAndroidKey.strip();
         this.amapAndroidKey = mapKey.matches("[0-9a-fA-F]{32}") ? mapKey : null;
         this.jdbc = jdbc;
@@ -202,7 +203,8 @@ class SharingService {
         }
         if (now - sample.recordedAt <= 120_000) {
             if (self.journeyEnabled) recordJourney(self, sample, Boolean.TRUE.equals(reading.amapPlaceNames()));
-            recordArrivals(self, sample);
+            places.recordArrivals(self.pairId, self.id, sample,
+                    name -> addEvent(self, "PLACE_ARRIVAL", "到达 " + name, sample.recordedAt));
         }
     }
 
@@ -393,16 +395,7 @@ class SharingService {
     @Transactional
     public List<Place> savedPlaces(String username) {
         Member self = current(username);
-        return self.pairId == null ? List.of() : placesFor(self.pairId, self.id);
-    }
-
-    private List<Place> placesFor(String pair, String owner) {
-        return jdbc.query("""
-                SELECT id, name, latitude, longitude, watching, armed FROM companion_place
-                WHERE pair_id = ? AND owner_id = ? ORDER BY name, id
-                """, (row, index) -> new Place(row.getString("id"), row.getString("name"),
-                row.getDouble("latitude"), row.getDouble("longitude"), row.getBoolean("watching"), row.getBoolean("armed")),
-                pair, owner);
+        return self.pairId == null ? List.of() : places.findAll(self.pairId, self.id);
     }
 
     @Transactional
@@ -410,20 +403,15 @@ class SharingService {
         guard.lock();
         Member self = current(username);
         if (self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
-        if (placesFor(self.pairId, self.id).size() >= 20) throw failure(HttpStatus.CONFLICT, "最多保存 20 个地点");
-        String key = id();
-        String name = request.name().strip();
-        jdbc.update("""
-                INSERT INTO companion_place(id, pair_id, owner_id, name, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?)
-                """, key, self.pairId, self.id, name, request.point().latitude(), request.point().longitude());
-        return new Place(key, name, request.point().latitude(), request.point().longitude(), false, false);
+        if (places.findAll(self.pairId, self.id).size() >= 20) throw failure(HttpStatus.CONFLICT, "最多保存 20 个地点");
+        return places.add(id(), self.pairId, self.id, request.name().strip(), request.point());
     }
 
     @Transactional
     public void watchPlace(String username, String id, boolean enabled) {
         guard.lock();
         Member self = current(username);
-        Place place = placesFor(self.pairId, self.id).stream().filter(p -> p.id().equals(id)).findFirst()
+        Place place = places.findAll(self.pairId, self.id).stream().filter(p -> p.id().equals(id)).findFirst()
                 .orElseThrow(() -> failure(HttpStatus.NOT_FOUND, "地点不存在"));
         long now = System.currentTimeMillis();
         Member partner = partnerOf(self);
@@ -431,46 +419,14 @@ class SharingService {
             throw failure(HttpStatus.CONFLICT, "对方当前未共享位置");
         }
         PositionSample point = enabled ? lastPoint(partner, now) : null;
-        boolean armed = point != null && now - point.recordedAt <= 240_000 && point.accuracy <= 55
-                && distanceMeters(place.latitude(), place.longitude(), point.latitude, point.longitude)
-                        > PLACE_RADIUS_METRES + point.accuracy;
-        jdbc.update("""
-                UPDATE companion_place SET watching = ?, armed = ?, inside_at = NULL, observed_at = ?
-                WHERE id = ?
-                """, enabled, armed, point == null ? now : point.recordedAt, id);
+        places.updateWatch(place, enabled, point, now);
     }
 
     @Transactional
     public void deletePlace(String username, String id) {
         guard.lock();
         Member self = current(username);
-        jdbc.update("DELETE FROM companion_place WHERE id = ? AND owner_id = ? AND pair_id = ?", id, self.id, self.pairId);
-    }
-
-    private record ArrivalPlace(String id, String name, double lat, double lng, boolean armed, Long insideAt) {}
-
-    private void recordArrivals(Member sender, PositionSample sample) {
-        if (sample.accuracy > 55) return;
-        var places = jdbc.query("""
-                SELECT id, name, latitude, longitude, armed, inside_at FROM companion_place
-                WHERE pair_id = ? AND owner_id <> ? AND watching = TRUE AND observed_at < ?
-                """, (row, index) -> new ArrivalPlace(row.getString("id"), row.getString("name"),
-                row.getDouble("latitude"), row.getDouble("longitude"), row.getBoolean("armed"),
-                row.getObject("inside_at", Long.class)), sender.pairId, sender.id, sample.recordedAt);
-        for (var place : places) {
-            double distance = distanceMeters(place.lat(), place.lng(), sample.latitude, sample.longitude);
-            boolean outside = distance > PLACE_RADIUS_METRES + sample.accuracy;
-            boolean inside = distance + sample.accuracy <= PLACE_RADIUS_METRES;
-            Long insideAt = inside && place.armed() ? place.insideAt() : null;
-            if (inside && place.armed() && (insideAt == null || sample.recordedAt - insideAt > 240_000)) {
-                insideAt = sample.recordedAt;
-            }
-            boolean arrived = insideAt != null && sample.recordedAt - insideAt >= 15_000;
-            jdbc.update("""
-                    UPDATE companion_place SET watching = ?, armed = ?, inside_at = ?, observed_at = ? WHERE id = ?
-                    """, !arrived, !arrived && (outside || place.armed()), arrived ? null : insideAt, sample.recordedAt, place.id());
-            if (arrived) addEvent(sender, "PLACE_ARRIVAL", "到达 " + place.name(), sample.recordedAt);
-        }
+        places.delete(id, self.id, self.pairId);
     }
 
     private void checkInteraction(Member self, String kind, long now) {
@@ -569,13 +525,6 @@ class SharingService {
         if (minutes < 60) return " · 停留约 " + minutes + " 分钟";
         String remainder = minutes % 60 == 0 ? "" : " " + minutes % 60 + " 分钟";
         return " · 停留约 " + minutes / 60 + " 小时" + remainder;
-    }
-
-    private static double distanceMeters(double firstLat, double firstLon, double lat, double lon) {
-        double a = Math.pow(Math.sin(Math.toRadians(lat - firstLat) / 2), 2)
-                + Math.cos(Math.toRadians(firstLat)) * Math.cos(Math.toRadians(lat))
-                * Math.pow(Math.sin(Math.toRadians(lon - firstLon) / 2), 2);
-        return 12_742_000 * Math.asin(Math.sqrt(Math.min(1, a)));
     }
 
     @Transactional
@@ -703,7 +652,7 @@ class SharingService {
         if (previous == null || previous.accuracy > 50 || sample.accuracy > 50) return null;
         long elapsed = sample.recordedAt - previous.recordedAt;
         if (elapsed < 10_000 || elapsed > 90_000) return null;
-        double observed = distanceMeters(previous.latitude, previous.longitude, sample.latitude, sample.longitude);
+        double observed = GeoDistance.distanceMeters(previous.latitude, previous.longitude, sample.latitude, sample.longitude);
         double distance = Math.max(0, observed - previous.accuracy - sample.accuracy);
         double metersPerSecond = distance / (elapsed / 1000.0);
         if (metersPerSecond > 70) return null;
