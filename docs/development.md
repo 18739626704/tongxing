@@ -48,4 +48,4 @@ apksigner verify --verbose --print-certs tongxing.apk
 接口受配对关系和授权约束。改动绑定、共享、解绑或 SOS 时，需要兼顾旧客户端、重复请求及数据清理。
 
 ## 发布版本
-同步更新根目录 `pom.xml` 的服务端版本，以及 `android/app/build.gradle` 的 `versionName` 和 `versionCode`。主分支构建通过后，在 GitHub Releases 对应版本上传标准 APK 和 `SHA256SUMS`。原生地图包直接作为 Release 附件发布，源码仓库只保留代码。历史版本可能通过 CI 从 `downloads/` 读取已签名文件并发布。签名密钥始终保留在发布者自己的环境。
+同步更新根目录 `pom.xml` 的服务端版本，以及 `android/app/build.gradle` 的 `versionName` 和 `versionCode`。主分支构建通过后，在 GitHub Releases 对应版本上传标准 APK 和 `SHA256SUMS`。签名 APK 和校验文件统一放在 Release 附件中。签名密钥始终保留在发布者自己的环境。
