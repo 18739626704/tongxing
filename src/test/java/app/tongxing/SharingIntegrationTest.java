@@ -1,0 +1,174 @@
+package app.tongxing;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.CookieManager;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
+        "spring.datasource.url=${TEST_DB_URL:jdbc:h2:mem:tongxing;MODE=MySQL;DB_CLOSE_DELAY=-1}",
+        "spring.datasource.username=${TEST_DB_USER:sa}", "spring.datasource.password=${TEST_DB_PASSWORD:}",
+        "server.servlet.session.cookie.secure=false",
+        "tongxing.enrollment-key=integration-test-enrollment-key"
+})
+class SharingIntegrationTest {
+    private static final String PASSWORD = "integration-test-password";
+    private static final String ENROLLMENT = "integration-test-enrollment-key";
+    @LocalServerPort int port;
+    final ObjectMapper json = new ObjectMapper();
+
+    @Test
+    void pairingConsentPositionHistoryAndRevocation() throws Exception {
+        Client alice = new Client();
+        Client bob = new Client();
+        Client stranger = new Client();
+        assertThat(alice.get("/overview").statusCode()).isEqualTo(401);
+        assertThat(alice.rawPost("/register").statusCode()).isEqualTo(403);
+        alice.signIn("Alice");
+        bob.signIn("Bob");
+        stranger.signIn("Stranger");
+
+        String code = alice.mutate("POST", "/invite", "", 200).path("code").asText();
+        alice.mutate("POST", "/pair", Map.of("code", code), 409);
+        bob.mutate("POST", "/pair", Map.of("code", code), 204);
+        stranger.mutate("POST", "/pair", Map.of("code", code), 409);
+        assertThat(alice.overview().at("/partner/displayName").asText()).isEqualTo("Bob");
+        assertThat(alice.overview().at("/partner/sharing").asBoolean()).isFalse();
+
+        String aliceKey = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        String bobKey = bob.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        long now = System.currentTimeMillis();
+        Map<String, Object> sample = sample(aliceKey, 34.7600, now);
+        alice.mutate("POST", "/positions", sample, 204);
+        alice.mutate("POST", "/positions", sample, 204);
+        alice.mutate("POST", "/positions", sample(aliceKey, 34.7500, now - 5000), 204);
+        bob.mutate("POST", "/positions", sample(bobKey, 34.7700, now), 204);
+        assertThat(alice.overview().at("/partner/lastLocation/latitude").asDouble()).isEqualTo(34.7700);
+        assertThat(bob.overview().at("/partner/lastLocation/latitude").asDouble()).isEqualTo(34.7600);
+        assertThat(bob.overview().at("/partner/lastLocation/battery").asInt()).isEqualTo(76);
+        JsonNode history = bob.route(true, now - 10_000, now + 10_000);
+        assertThat(history.size()).isEqualTo(2);
+        assertThat(history.get(0).path("latitude").asDouble()).isEqualTo(34.7500);
+        assertThat(stranger.overview().path("partner").isNull()).isTrue();
+        assertThat(stranger.route(true, now - 10_000, now + 10_000).size()).isZero();
+
+        alice.mutate("PUT", "/sharing", Map.of("enabled", false), 200);
+        alice.mutate("POST", "/positions", sample(aliceKey, 34.7800, now), 409);
+        assertThat(bob.overview().at("/partner/lastLocation").isNull()).isTrue();
+        assertThat(bob.route(true, now - 10_000, now + 10_000).size()).isZero();
+        assertThat(alice.route(false, now - 10_000, now + 10_000).size()).isEqualTo(2);
+
+        String replacement = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200)
+                .path("shareKey").asText();
+        assertThat(replacement).isNotEqualTo(aliceKey);
+        alice.mutate("POST", "/positions", sample(aliceKey, 34.7800, now), 409);
+        alice.mutate("POST", "/positions", sample(replacement, 200, now), 400);
+        alice.mutate("DELETE", "/positions", "", 204);
+        assertThat(alice.route(false, now - 10_000, now + 10_000).size()).isZero();
+
+        bob.mutate("DELETE", "/pair", "", 204);
+        assertThat(alice.overview().path("partner").isNull()).isTrue();
+        assertThat(bob.route(false, now - 10_000, now + 10_000).size()).isZero();
+        String rebind = alice.mutate("POST", "/invite", "", 200).path("code").asText();
+        bob.mutate("POST", "/pair", Map.of("code", rebind), 204);
+        bob.mutate("PUT", "/sharing", Map.of("enabled", true), 200);
+        assertThat(alice.route(true, now - 10_000, now + 10_000).size()).isZero();
+        bob.mutate("POST", "/logout", "", 204);
+        assertThat(bob.get("/overview").statusCode()).isEqualTo(401);
+    }
+
+    @Test
+    void inviteIsConsumedByOnlyOneConcurrentApplicant() throws Exception {
+        Client inviter = new Client();
+        Client first = new Client();
+        Client second = new Client();
+        inviter.signIn("Inviter");
+        first.signIn("First");
+        second.signIn("Second");
+        String code = inviter.mutate("POST", "/invite", "", 200).path("code").asText();
+        var result1 = CompletableFuture.supplyAsync(() -> first.accept(code));
+        var result2 = CompletableFuture.supplyAsync(() -> second.accept(code));
+        assertThat(new int[]{result1.get(), result2.get()}).containsExactlyInAnyOrder(204, 409);
+    }
+
+    private Map<String, Object> sample(String shareKey, double latitude, long time) {
+        return Map.of("id", UUID.randomUUID().toString(), "shareKey", shareKey,
+                "latitude", latitude, "longitude", 113.65, "accuracy", 8,
+                "battery", 76, "charging", true, "recordedAt", time);
+    }
+
+    private final class Client {
+        private final HttpClient http = HttpClient.newBuilder().cookieHandler(new CookieManager())
+                .connectTimeout(Duration.ofSeconds(5)).build();
+
+        void signIn(String name) throws Exception {
+            String username = name.toLowerCase(java.util.Locale.ROOT) + UUID.randomUUID().toString().substring(0, 8);
+            mutate("POST", "/register", Map.of("username", username,
+                    "password", PASSWORD, "displayName", name, "enrollmentKey", ENROLLMENT), 201);
+            HttpResponse<String> login = send("POST", "/login", "username=" + username + "&password=" + PASSWORD,
+                    "application/x-www-form-urlencoded", token());
+            assertThat(login.statusCode()).isEqualTo(204);
+        }
+
+        int accept(String code) {
+            try {
+                return send("POST", "/pair", json.writeValueAsString(Map.of("code", code)),
+                        "application/json", token()).statusCode();
+            } catch (Exception error) {
+                throw new IllegalStateException(error);
+            }
+        }
+
+        JsonNode mutate(String method, String path, Object body, int status) throws Exception {
+            HttpResponse<String> response = send(method, path, body instanceof String text
+                    ? text : json.writeValueAsString(body), "application/json", token());
+            assertThat(response.statusCode()).as("%s %s %s", method, path, response.body()).isEqualTo(status);
+            return json.readTree(response.body());
+        }
+
+        JsonNode overview() throws Exception {
+            HttpResponse<String> response = get("/overview");
+            assertThat(response.statusCode()).isEqualTo(200);
+            return json.readTree(response.body());
+        }
+
+        JsonNode route(boolean partner, long from, long to) throws Exception {
+            HttpResponse<String> response = get("/positions?partner=" + partner + "&from=" + from + "&to=" + to);
+            assertThat(response.statusCode()).isEqualTo(200);
+            return json.readTree(response.body());
+        }
+
+        HttpResponse<String> rawPost(String path) throws Exception {
+            return send("POST", path, "{}", "application/json", null);
+        }
+
+        HttpResponse<String> get(String path) throws Exception {
+            return send("GET", path, "", "application/json", null);
+        }
+
+        private JsonNode token() throws Exception {
+            return json.readTree(get("/csrf").body());
+        }
+
+        private HttpResponse<String> send(String method, String path, String body, String contentType, JsonNode token)
+                throws Exception {
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api" + path))
+                    .timeout(Duration.ofSeconds(10)).header("Content-Type", contentType)
+                    .method(method, HttpRequest.BodyPublishers.ofString(body));
+            if (token != null) request.header(token.path("header").asText(), token.path("token").asText());
+            return http.send(request.build(), HttpResponse.BodyHandlers.ofString());
+        }
+    }
+}

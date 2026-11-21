@@ -1,0 +1,27 @@
+server:
+  port: 8080
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      timeout: 7d
+      cookie:
+        http-only: true
+        secure: ${SECURE_COOKIE:true}
+        same-site: strict
+  error:
+    include-message: never
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  jackson:
+    deserialization:
+      fail-on-null-for-primitives: true
+mybatis-plus:
+  global-config:
+    banner: false
+    db-config:
+      id-type: input
+tongxing:
+  enrollment-key: ${ENROLLMENT_KEY:}
