@@ -18,7 +18,7 @@ class SharingController {
                         @NotBlank @Size(max = 32) String displayName,
                         @NotBlank @Size(max = 256) String enrollmentKey) {}
     record Accept(@NotBlank @Pattern(regexp = "[0-9A-Fa-f]{16}") String code) {}
-    record Consent(@NotNull Boolean enabled) {}
+    record Consent(@NotNull Boolean enabled, UUID pairId) {}
     record Reading(@NotNull UUID id, @NotNull UUID shareKey,
                    @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
                    @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
@@ -36,7 +36,7 @@ class SharingController {
     record AppUsageReport(@NotNull UUID shareKey, @NotNull java.time.LocalDate date, @NotNull Long recordedAt,
                           @NotNull @Size(max = 200) List<@NotNull @Valid AppDuration> apps) {}
     record AppUsageSnapshot(String date, long recordedAt, List<AppDuration> apps) {}
-    record Overview(Status self, Status partner, long serverTime) {}
+    record Overview(Status self, Status partner, long serverTime, String pairId) {}
     record ShareState(String shareKey) {}
     record InviteCode(String code, long expiresAt) {}
 
@@ -87,7 +87,7 @@ class SharingController {
 
     @PutMapping("/sharing")
     ShareState share(Principal user, @Valid @RequestBody Consent consent) {
-        return sharing.consent(user.getName(), consent.enabled());
+        return sharing.consent(user.getName(), consent.enabled(), consent.pairId());
     }
 
     @PostMapping("/positions")
@@ -141,7 +141,7 @@ class SharingController {
     @PutMapping("/app-usage-sharing")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void appUsageSharing(Principal user, @Valid @RequestBody Consent consent) {
-        sharing.appUsageSharing(user.getName(), consent.enabled());
+        sharing.appUsageSharing(user.getName(), consent.enabled(), consent.pairId());
     }
 
     @PutMapping("/app-usage")
@@ -156,13 +156,13 @@ class SharingController {
     @PutMapping("/device-status-sharing")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void deviceStatusSharing(Principal user, @Valid @RequestBody Consent consent) {
-        sharing.deviceStatusSharing(user.getName(), consent.enabled());
+        sharing.deviceStatusSharing(user.getName(), consent.enabled(), consent.pairId());
     }
 
     @PutMapping("/usage-sharing")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void usageSharing(Principal user, @Valid @RequestBody Consent consent) {
-        sharing.usageSharing(user.getName(), consent.enabled());
+        sharing.usageSharing(user.getName(), consent.enabled(), consent.pairId());
     }
 
     @PutMapping("/push-token")

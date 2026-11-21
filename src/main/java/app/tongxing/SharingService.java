@@ -117,9 +117,10 @@ class SharingService {
     }
 
     @Transactional
-    public ShareState consent(String username, boolean enabled) {
+    public ShareState consent(String username, boolean enabled, UUID pairId) {
         guard.lock();
         Member self = current(username);
+        checkPair(self, pairId);
         if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
         String shareKey = enabled ? id() : null;
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
@@ -127,6 +128,12 @@ class SharingService {
         jdbc.update("UPDATE shared_place SET inside = NULL WHERE member_id = ?", self.id);
         if (!enabled) clearInsights(self.id);
         return new ShareState(shareKey);
+    }
+
+    private void checkPair(Member self, UUID pairId) {
+        if (pairId != null && !pairId.toString().equals(self.pairId)) {
+            throw failure(HttpStatus.CONFLICT, "伴侣绑定已更换，请重新确认共享");
+        }
     }
 
     @Transactional
@@ -184,7 +191,7 @@ class SharingService {
         Member self = current(username);
         Member partner = partnerOf(self);
         long now = System.currentTimeMillis();
-        return new Overview(status(self, now), partner == null ? null : status(partner, now), now);
+        return new Overview(status(self, now), partner == null ? null : status(partner, now), now, self.pairId);
     }
 
     @Transactional
@@ -318,27 +325,30 @@ class SharingService {
     }
 
     @Transactional
-    public void usageSharing(String username, boolean enabled) {
+    public void usageSharing(String username, boolean enabled, UUID pairId) {
         guard.lock();
         Member self = current(username);
+        checkPair(self, pairId);
         if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
         jdbc.update("UPDATE member SET usage_enabled = ?, screen_minutes = NULL, screen_date = NULL WHERE id = ?",
                 enabled, self.id);
     }
 
     @Transactional
-    public void appUsageSharing(String username, boolean enabled) {
+    public void appUsageSharing(String username, boolean enabled, UUID pairId) {
         guard.lock();
         Member self = current(username);
+        checkPair(self, pairId);
         if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
         jdbc.update("UPDATE member SET app_usage_enabled = ? WHERE id = ?", enabled, self.id);
         if (!enabled) jdbc.update("DELETE FROM app_usage_snapshot WHERE member_id = ?", self.id);
     }
 
     @Transactional
-    public void deviceStatusSharing(String username, boolean enabled) {
+    public void deviceStatusSharing(String username, boolean enabled, UUID pairId) {
         guard.lock();
         Member self = current(username);
+        checkPair(self, pairId);
         if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
         jdbc.update("UPDATE member SET device_status_enabled = ? WHERE id = ?", enabled, self.id);
         if (!enabled) {

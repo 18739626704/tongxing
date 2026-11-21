@@ -154,6 +154,13 @@ class SharingIntegrationTest {
         String invite = alice.mutate("POST", "/invite", "", 200).path("code").asText();
         bob.mutate("POST", "/pair", Map.of("code", invite), 204);
 
+        String currentPair = alice.overview().path("pairId").asText();
+        String wrongPair = UUID.randomUUID().toString();
+        alice.mutate("PUT", "/sharing", Map.of("enabled", true, "pairId", wrongPair), 409);
+        alice.mutate("PUT", "/app-usage-sharing", Map.of("enabled", true, "pairId", wrongPair), 409);
+        alice.mutate("PUT", "/device-status-sharing", Map.of("enabled", true, "pairId", wrongPair), 409);
+        assertThat(currentPair).isEqualTo(bob.overview().path("pairId").asText());
+        assertThat(alice.overview().at("/self/appUsageEnabled").asBoolean()).isFalse();
         outsider.mutate("POST", "/routine", Map.of("resting", true), 409);
         alice.mutate("POST", "/routine", Map.of("resting", true), 204);
         assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("ROUTINE");
