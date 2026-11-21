@@ -32,16 +32,16 @@ apksigner verify --verbose --print-certs tongxing.apk
 ### 可选构建
 
 ```bash
-./gradlew assembleRelease -PtongxingAmap=true
+./gradlew assembleRelease -PtongxingAmap=false
 ./gradlew assembleRelease -PtongxingFirebaseConfig=/private/path/google-services.json
 ```
 
-可以同时使用两个参数。高德依赖从 Maven 仓库下载，Firebase 从指定的 JSON 提取应用配置。APK 仍需签名后才能安装，服务端需同步配置[对应的变量](deploy.md#可选配置)。任何签名私钥、Firebase 服务账号或高德 Web 服务 Key 都应保存在源码目录之外。
+标准构建默认包含高德 SDK 和 OpenStreetMap，是否使用高德在运行时由服务端 Android Key 和客户端隐私确认决定。第一条命令构建不含高德 SDK 的轻量包，它仍默认显示 OpenStreetMap。第二条命令增加 Firebase 推送，可以与轻量选项组合。高德依赖从 Maven 仓库下载，Firebase 从指定的 JSON 提取应用配置。APK 仍需签名后才能安装，服务端需同步配置[对应的变量](deploy.md#可选配置)。任何签名私钥、Firebase 服务账号或高德 Web 服务 Key 都应保存在源码目录之外。
 
 ## 代码边界
 
 - 安卓 `MainActivity` 负责界面流程，`Api` 统一处理连接地址、会话和请求。
-- `LocationSharing` 管理定位和同步。地图经 `NativeMap` 接口调用，由 `LeafletMap` 或原生高德渲染。时间轴归并由 `RouteTimeline` 负责。
+- `LocationSharing` 管理定位和同步。`MainActivity.makeMap()` 依据 SDK、服务端 Android Key 和用户授权选择原生高德，其他情况下由 `LeafletMap` 渲染 OpenStreetMap。时间轴归并由 `RouteTimeline` 负责。
 - 服务端 `SharingController` 负责参数校验和 API，`Security` 管理会话与 CSRF。主要授权和事务边界在 `SharingService`，地点提醒由 `SavedPlaces` 处理。
 - `store/` 下是 MyBatis-Plus 实体及映射。MySQL 结构通过 `src/main/resources/db/migration/` 的 Flyway 迁移管理。已经发布的迁移不能就地修改，新增变更请增加迁移文件。
 

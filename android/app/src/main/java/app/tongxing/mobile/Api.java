@@ -52,9 +52,11 @@ final class Api {
                 && !preferences.getString("session", "").isEmpty();
     }
 
-    boolean streetMapAllowed() { return preferences.getBoolean("street-map-allowed", false); }
+    boolean streetMapAllowed() { return preferences.getBoolean("street-map-allowed", true); }
 
     void allowStreetMap(boolean enabled) { preferences.edit().putBoolean("street-map-allowed", enabled).apply(); }
+
+    boolean amapMapChoiceMade() { return preferences.contains("amap-map-allowed"); }
 
     boolean amapMapAllowed() { return preferences.getBoolean("amap-map-allowed", false); }
 

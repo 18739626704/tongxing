@@ -21,7 +21,7 @@ openssl rand -hex 24
 | `DB_PASSWORD` | 同行专用 MySQL 用户的密码 |
 | `DB_ROOT_PASSWORD` | MySQL 管理员密码，与应用密码不同 |
 | `ENROLLMENT_KEY` | 至少 24 字节的注册口令，只发给要在此实例注册的人 |
-| `AMAP_ANDROID_KEY` | 可选，自行打包高德版时使用的 Android 平台 SDK Key |
+| `AMAP_ANDROID_KEY` | 可选，标准 APK 使用的 Android 平台地图 SDK Key |
 | `AMAP_WEB_SERVICE_KEY` | 可选，高德 Web 服务 Key，用于到达或离开事件的地点名称 |
 | `FCM_SERVICE_ACCOUNT_JSON` | 可选，开启 FCM 的 Firebase 服务账号 JSON，保存为一行 |
 
@@ -51,12 +51,12 @@ curl -fsS https://share.example.com/api/health
 
 ### 高德
 
-默认 APK 无需申请任何地图 Key。它使用系统定位，街道底图可在手机上选择启用。要使用高德原生地图，自行编译高德版 APK，然后配置以下两个 Key。
+从 0.7.1 起，标准 APK 同时包含高德 Android SDK 和 OpenStreetMap。无 Android Key 或用户尚未同意高德隐私说明时，自动显示 OpenStreetMap 街道底图，无需到设置中勾选。配置 Android Key 后，标准 APK 登录并同步配置时会提示首次隐私确认。同意后自动切换，之后无需再次选地图。旧版轻量 APK 或通过 `-PtongxingAmap=false` 构建的 APK 需升级到含 SDK 的标准 APK 才能使用高德。
 
 1. 在[高德开放平台控制台](https://console.amap.com/)进入「应用管理 → 我的应用」，创建一个应用。
 2. 添加 Key，服务平台选「Android 平台 SDK」。包名填 `app.tongxing.mobile`，SHA1 填该 APK 的实际发布证书指纹。可用 `apksigner verify --print-certs <APK>` 查看。把这一项填到服务端的 `AMAP_ANDROID_KEY`。
 3. 若需要地点名，再添加一个「Web 服务」Key，填到服务端的 `AMAP_WEB_SERVICE_KEY`。这一项也可单独配置，无需重打默认 APK。
-4. 重启服务。高德版客户端登录后读取 Android Key，使用前需确认对应的地图服务授权。Web 服务 Key 只由服务端使用。
+4. 重启或重新部署服务让变量生效。标准 APK 登录后读取 Android Key，无需在手机填写或因换 Key 重新打包。Web 服务 Key 只由服务端使用，与底图选择独立。Android Key 必须与实际 APK 的包名和签名 SHA-1 匹配。
 
 参考 [Android 地图 SDK 申请指引](https://lbs.amap.com/api/android-sdk/guide/create-project/get-key) 和 [Web 服务 Key 申请指引](https://lbs.amap.com/api/webservice/guide/create-project/get-key)。
 

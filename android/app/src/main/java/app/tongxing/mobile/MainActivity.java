@@ -86,6 +86,8 @@ public final class MainActivity extends Activity {
     private boolean permissionPromptShown;
     private TextView permissionsChip;
     private AlertDialog permissionDialog;
+    private AlertDialog mapPrivacyDialog;
+    private boolean mapPrivacyShown;
     private LinearLayout permissionRows;
     private TextView partnerAvatar;
     private TextView partnerDeviceLine;
@@ -165,6 +167,7 @@ public final class MainActivity extends Activity {
         if (sosFixRequest != null) sosFixRequest.cancel();
         main.removeCallbacksAndMessages(null);
         executor.shutdownNow();
+        if (mapPrivacyDialog != null) mapPrivacyDialog.dismiss();
         if (permissionDialog != null) permissionDialog.dismiss();
         disposeMap();
         super.onDestroy();
@@ -524,16 +527,16 @@ public final class MainActivity extends Activity {
         LinearLayout privacy = card(content);
         label(privacy, "权限与共享", 20, INK).setTypeface(null, Typeface.BOLD);
         settingsAction(privacy, "权限与共享", false, this::showPermissions);
-        if (!AmapMap.available()) {
-            boolean enabled = api.streetMapAllowed();
-            settingsAction(privacy, enabled ? "关闭街道底图" : "开启街道底图", false, () -> {
-                if (enabled) {
-                    api.allowStreetMap(false);
-                    render();
-                } else {
-                    confirm("开启街道底图", "地图会向 OpenStreetMap 请求当前查看区域的瓦片。你可以随时关闭底图。",
-                            () -> { api.allowStreetMap(true); render(); });
-                }
+        boolean streetMap = api.streetMapAllowed();
+        settingsAction(privacy, streetMap ? "关闭 OpenStreetMap 底图" : "开启 OpenStreetMap 底图", false, () -> {
+            api.allowStreetMap(!streetMap);
+            render();
+        });
+        if (amapConfigured()) {
+            boolean amap = api.amapMapAllowed();
+            settingsAction(privacy, amap ? "停用高德地图" : "启用高德地图", false, () -> {
+                if (amap) setAmapAllowed(false);
+                else showAmapConsent();
             });
         }
         settingsAction(privacy, "紧急联系人", false, this::editEmergencyContact);
@@ -569,9 +572,47 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private boolean amapConfigured() {
+        return AmapMap.available() && !amapAndroidKey().isEmpty();
+    }
+
+    private void maybeShowAmapConsent() {
+        if (resumed && !isFinishing() && mapFrame != null && permissionDialog == null
+                && !mapPrivacyShown && !api.amapMapChoiceMade() && amapConfigured()) {
+            showAmapConsent();
+        }
+    }
+
+    private void showAmapConsent() {
+        if (mapPrivacyDialog != null || !amapConfigured()) return;
+        mapPrivacyShown = true;
+        mapPrivacyDialog = new AlertDialog.Builder(this).setTitle("高德地图隐私确认")
+                .setMessage("高德 SDK 用于显示地图，会按其隐私政策处理设备、网络和位置相关信息。"
+                        + "同意后自动使用高德底图，可在设置中随时停用。此选择与向伴侣共享位置独立。")
+                .setNeutralButton("高德隐私政策", null)
+                .setPositiveButton("同意", (dialog, which) -> setAmapAllowed(true))
+                .setNegativeButton("使用默认地图", (dialog, which) -> setAmapAllowed(false))
+                .create();
+        mapPrivacyDialog.setOnDismissListener(dialog -> mapPrivacyDialog = null);
+        mapPrivacyDialog.show();
+        mapPrivacyDialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> showAmapPrivacy());
+    }
+
+    private void setAmapAllowed(boolean allowed) {
+        api.allowAmapMap(allowed);
+        if (mapFrame == null) {
+            render();
+            return;
+        }
+        JSONObject previousMapData = mapData;
+        disposeMap();
+        makeMap();
+        mapData = previousMapData;
+        sendMapData();
+    }
+
     private boolean mapServicesPending() {
-        return (AmapMap.available() && !amapAndroidKey().isEmpty() && !api.amapMapAllowed())
-                || (!currentPair().isEmpty() && placeNamesAvailable() && !api.amapPlaceNames());
+        return !currentPair().isEmpty() && placeNamesAvailable() && !api.amapPlaceNames();
     }
 
     private record PermissionRow(String label, boolean allowed, Runnable open) {}
@@ -1281,20 +1322,13 @@ public final class MainActivity extends Activity {
 
     private void showSharingSetup(String pair) {
         new AlertDialog.Builder(this).setTitle("确认权限与共享")
-                .setMessage((pair.isEmpty() ? "" : "在相应系统权限允许后，当前伴侣可查看你的后台位置、足迹、自动到离、设备状态、亮屏与锁定状态，以及应用使用时长。步数信号只用于本机调节定位。\n\n")
-                        + "高德 SDK 用于显示地图，会按其隐私政策处理设备、网络和位置相关信息。已开启共享且生成到离报备时，服务器会向高德查询停留区域的名称。可在「权限与共享」撤回共享授权。")
-                .setNeutralButton("高德隐私政策", (dialog, which) -> showAmapPrivacy())
+                .setMessage("在相应系统权限允许后，当前伴侣可查看你的后台位置、足迹、自动到离、设备状态、"
+                        + "亮屏与锁定状态，以及应用使用时长。步数信号只用于本机调节定位。"
+                        + (placeNamesAvailable() ? "\n\n已开启共享且生成到离报备时，服务器会向高德查询停留区域的名称。" : "")
+                        + "\n\n可在「权限与共享」撤回共享授权。")
                 .setPositiveButton("开启共享", (dialog, which) -> {
                     if (!pair.equals(currentPair())) return;
                     if (!pair.isEmpty()) api.acceptUnifiedConsent(pair);
-                    if (!amapAndroidKey().isEmpty() && !api.amapMapAllowed()) {
-                        api.allowAmapMap(true);
-                        if (mapFrame != null) {
-                            disposeMap();
-                            makeMap();
-                            if (tab == 0) updateOverview(true);
-                        }
-                    }
                     if (!pair.isEmpty() && placeNamesAvailable()) api.allowAmapPlaceNames(true);
                     nextSharingAttempt = 0;
                     maybeResumeSharing();
@@ -1506,7 +1540,8 @@ public final class MainActivity extends Activity {
             LiveWidget.update(this, overview);
             updateOverview(recenter);
             maybeResumeSharing();
-            checkSetup();
+            maybeShowAmapConsent();
+            if (mapPrivacyDialog == null) checkSetup();
             updatePermissionChip();
             if (page == 1) {
                 var partner = overview.optJSONObject("partner");
@@ -1835,6 +1870,8 @@ public final class MainActivity extends Activity {
     private void makeMap() {
         mapData = null;
         String key = amapAndroidKey();
+        // The server chooses the available provider at runtime. A missing Key or declined
+        // SDK consent leaves the OpenStreetMap renderer active without another build.
         if (AmapMap.available() && api.amapMapAllowed() && !key.isEmpty()) {
             try {
                 nativeMap = AmapMap.create(this, key);
@@ -1892,6 +1929,8 @@ public final class MainActivity extends Activity {
     private void signedOut(String reason) {
         stopService(new Intent(this, LocationSharing.class));
         authenticated = false;
+        if (mapPrivacyDialog != null) mapPrivacyDialog.dismiss();
+        mapPrivacyShown = false;
         LiveWidget.update(this, null);
         CompanionNotifications.cancel(this);
         feedCache = null;
