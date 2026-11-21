@@ -139,6 +139,10 @@ struct LiveMapView: View {
         if let journey = partner.journey {
             Text(journey.state == "TRAVELLING" ? "行程中" : "停留中").font(.caption).foregroundStyle(Palette.muted)
         }
+        if let minutes = partner.screenMinutes, let date = partner.screenDate {
+            Text("\(date) · 屏幕使用 \(duration(Int64(minutes) * 60_000))")
+                .font(.caption).foregroundStyle(Palette.muted)
+        }
         if let live = partner.liveScreen, now - live.updatedAt < 180_000 {
             let states = ["OFF": "熄屏", "LOCKED": "锁屏", "UNLOCKED": "使用中"]
             if let status = states[live.state] {

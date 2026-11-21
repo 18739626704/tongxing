@@ -24,8 +24,10 @@ final class AppModel {
     @ObservationIgnored private let location = LocationSource()
     @ObservationIgnored private var shareKey: String?
     @ObservationIgnored private var lastUpload: CLLocation?
+    @ObservationIgnored private var retryUploadAfter: Date?
     @ObservationIgnored private var upload: Task<Void, Never>?
     @ObservationIgnored private var refreshing = false
+    @ObservationIgnored private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var pendingSos: (id: Int64, expires: Date)?
     @ObservationIgnored private var sosRequest: (id: String, pair: String, attach: Bool)?
     @ObservationIgnored private var restoringKey = false
@@ -91,13 +93,29 @@ final class AppModel {
     }
 
     func refresh() async {
-        guard !refreshing, let client = api, let session else { return }
+        while refreshing && !Task.isCancelled {
+            await withCheckedContinuation { refreshWaiters.append($0) }
+        }
+        guard !Task.isCancelled, let client = api, let session else { return }
         refreshing = true
-        defer { refreshing = false }
+        defer {
+            refreshing = false
+            let waiters = refreshWaiters
+            refreshWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
         do {
             try await flushPause(client, session)
-            let snapshot: Overview = try await client.get("overview")
+            var snapshot: Overview = try await client.get("overview")
             guard api === client else { return }
+            if let currentPair = snapshot.pairId, snapshot.selfStatus.sharing,
+               defaults.string(forKey: key("consent", session)) == currentPair,
+               authorization == .denied || authorization == .restricted {
+                queuePause(session, pair: currentPair, unavailable: true)
+                try await flushPause(client, session)
+                snapshot = try await client.get("overview")
+                guard api === client else { return }
+            }
             if snapshot.pairId != pair {
                 stopTracking()
                 lastFix = nil
@@ -373,6 +391,7 @@ final class AppModel {
         shareKey = nil
         sharingOnThisPhone = false
         lastUpload = nil
+        retryUploadAfter = nil
         pendingSos = nil
         trackingError = nil
         upload?.cancel()
@@ -399,7 +418,7 @@ final class AppModel {
               CLLocationCoordinate2DIsValid(fix.coordinate), (0...1_000).contains(fix.horizontalAccuracy),
               abs(fix.timestamp.timeIntervalSinceNow) <= 30 else { return }
         lastFix = fix
-        guard upload == nil else { return }
+        guard upload == nil, retryUploadAfter.map({ $0 <= Date() }) ?? true else { return }
         let sos = pendingSos.flatMap { $0.expires > Date() ? $0.id : nil }
         let due = lastUpload.map { previous in
             let moving = fix.distance(from: previous) > max(30, fix.horizontalAccuracy + previous.horizontalAccuracy)
@@ -435,6 +454,7 @@ final class AppModel {
                     guard client === api, shareKey == token else { return }
                     lastUpload = fix
                 }
+                retryUploadAfter = nil
                 trackingError = nil
             } catch {
                 guard client === api, shareKey == token, !Task.isCancelled else { return }
@@ -443,8 +463,9 @@ final class AppModel {
                     if pendingSos?.id == sos { pendingSos = nil }
                 } else if (error as? APIError)?.status == 409 {
                     stopTracking()
-                    await refresh()
+                    Task { await refresh() }
                 } else {
+                    retryUploadAfter = Date().addingTimeInterval(15)
                     trackingError = error.localizedDescription
                 }
             }
