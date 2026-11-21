@@ -168,7 +168,9 @@ class SharingIntegrationTest {
         assertThat(outsider.feed().path("events").isEmpty()).isTrue();
 
         assertThat(alice.get("/sharing").statusCode()).isEqualTo(409);
-        String key = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        Map<String, Object> enableForPair = Map.of("enabled", true, "pairId", currentPair);
+        String key = alice.mutate("PUT", "/sharing", enableForPair, 200).path("shareKey").asText();
+        assertThat(alice.mutate("PUT", "/sharing", enableForPair, 200).path("shareKey").asText()).isEqualTo(key);
         var resumed = alice.get("/sharing");
         assertThat(resumed.statusCode()).isEqualTo(200);
         assertThat(json.readTree(resumed.body()).path("shareKey").asText()).isEqualTo(key);

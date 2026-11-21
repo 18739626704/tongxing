@@ -122,6 +122,9 @@ class SharingService {
         Member self = current(username);
         checkPair(self, pairId);
         if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        if (enabled && pairId != null && self.sharing && self.shareKey != null) {
+            return new ShareState(self.shareKey);
+        }
         String shareKey = enabled ? id() : null;
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
                 .set("sharing", enabled).set("share_key", shareKey));
