@@ -34,27 +34,39 @@ final class Api {
     }
 
     private final SharedPreferences preferences;
-    private String base;
+    private final boolean persistSession;
+    private final Object sessionLock = new Object();
+    private volatile String base;
     private String cookie;
     private String username;
+    private int sessionVersion;
 
     private Api(Context context) {
         preferences = context.getSharedPreferences("tongxing", Context.MODE_PRIVATE);
+        persistSession = true;
         base = preferences.getString("base", "");
         cookie = preferences.getString("session", "");
         username = preferences.getString("username", "");
     }
 
-    String savedBase() { return preferences.getString("base", ""); }
-
-    boolean hasSession() {
-        return !preferences.getString("username", "").isEmpty()
-                && !preferences.getString("session", "").isEmpty();
+    private Api(SharedPreferences preferences, String base, String cookie, String username, int sessionVersion) {
+        this.preferences = preferences;
+        this.persistSession = false;
+        this.base = base;
+        this.cookie = cookie;
+        this.username = username;
+        this.sessionVersion = sessionVersion;
     }
 
-    boolean streetMapAllowed() { return preferences.getBoolean("street-map-allowed", true); }
+    String savedBase() { return preferences.getString("base", ""); }
 
-    void allowStreetMap(boolean enabled) { preferences.edit().putBoolean("street-map-allowed", enabled).apply(); }
+    String savedUsername() { return preferences.getString("username", ""); }
+
+    boolean hasSession() {
+        synchronized (sessionLock) {
+            return !username.isEmpty() && !cookie.isEmpty();
+        }
+    }
 
     boolean amapMapChoiceMade() { return preferences.contains("amap-map-allowed"); }
 
@@ -178,24 +190,54 @@ final class Api {
             JSONObject csrf = getObject("/csrf");
             send("POST", "/login", "username=" + encode(normalized) + "&password=" + encode(password),
                     "application/x-www-form-urlencoded", csrf);
-            username = normalized;
-            preferences.edit().putString("username", username).apply();
+            synchronized (sessionLock) {
+                username = normalized;
+                preferences.edit().putString("username", username).putString("session", cookie).apply();
+            }
         } catch (Exception exception) {
             clearSession();
             throw exception;
         }
     }
 
-    synchronized void logout() throws Exception {
-        stopSharing();
-        mutate("POST", "/logout", null);
-        clearSession();
+    // Detach the old credentials immediately, even while a network request holds the API lock.
+    Api beginLogout() {
+        synchronized (sessionLock) {
+            Api previous = new Api(preferences, base, cookie, username, sessionVersion);
+            preferences.edit().putBoolean(pauseKey(base, username), true)
+                    .remove("session").remove("username").commit();
+            resetSession();
+            return previous;
+        }
     }
 
-    synchronized void clearSession() {
+    void confirmRemoteLogout(Api previous) {
+        synchronized (sessionLock) {
+            if (sessionVersion == previous.sessionVersion + 1 && username.isEmpty()) {
+                preferences.edit().remove(pauseKey(previous.base, previous.username)).apply();
+            }
+        }
+    }
+
+    void clearSession() {
+        synchronized (sessionLock) {
+            resetSession();
+            preferences.edit().remove("session").remove("username").apply();
+        }
+    }
+
+    private void resetSession() {
+        sessionVersion++;
         cookie = "";
         username = "";
-        preferences.edit().remove("session").remove("username").apply();
+    }
+
+    void closeRemoteSession() throws Exception {
+        try {
+            mutate("PUT", "/sharing", json("enabled", false));
+        } finally {
+            mutate("POST", "/logout", null);
+        }
     }
 
     synchronized JSONObject getObject(String path) throws Exception {
@@ -207,7 +249,8 @@ final class Api {
     }
 
     String accountKey() {
-        return preferences.getString("base", "") + "#" + preferences.getString("username", "");
+        if (!persistSession) return base + "#" + username;
+        return savedBase() + "#" + savedUsername();
     }
 
     synchronized JSONArray route(boolean partner, long from, long to) throws Exception {
@@ -216,6 +259,7 @@ final class Api {
     }
 
     synchronized JSONObject mutate(String method, String path, JSONObject payload) throws Exception {
+        if (!path.equals("/register") && !hasSession()) throw new Failure(401, "请重新登录");
         JSONObject csrf = getObject("/csrf");
         String response = send(method, path, payload == null ? null : payload.toString(), "application/json", csrf);
         return response.isEmpty() ? new JSONObject() : new JSONObject(response);
@@ -223,15 +267,24 @@ final class Api {
 
     private String send(String method, String path, String body, String contentType, JSONObject csrf)
             throws Exception {
+        final int version;
+        final String requestCookie;
+        synchronized (sessionLock) {
+            version = sessionVersion;
+            requestCookie = cookie;
+            if (username.isEmpty() && !path.equals("/csrf") && !path.equals("/login") && !path.equals("/register")) {
+                throw new Failure(401, "请重新登录");
+            }
+        }
         HttpURLConnection connection = (HttpURLConnection) URI.create(base + "/api" + path).toURL().openConnection();
         try {
             connection.setInstanceFollowRedirects(false);
-            connection.setConnectTimeout(6000);
-            connection.setReadTimeout(7000);
+            connection.setConnectTimeout(persistSession ? 6000 : 2500);
+            connection.setReadTimeout(persistSession ? 7000 : 3000);
             connection.setUseCaches(false);
             connection.setRequestMethod(method);
             connection.setRequestProperty("Accept", "application/json");
-            if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
+            if (!requestCookie.isEmpty()) connection.setRequestProperty("Cookie", requestCookie);
             if (csrf != null) connection.setRequestProperty(csrf.getString("header"), csrf.getString("token"));
             if (body != null) {
                 byte[] data = body.getBytes(StandardCharsets.UTF_8);
@@ -243,11 +296,14 @@ final class Api {
                 }
             }
             int status = connection.getResponseCode();
-            if (status < 300 || status >= 400) saveCookie(connection.getHeaderFields());
+            synchronized (sessionLock) {
+                if (version != sessionVersion) throw new Failure(401, "请重新登录");
+                if (status < 300 || status >= 400) saveCookie(connection.getHeaderFields());
+            }
             if (status >= 200 && status < 300) return read(connection.getInputStream());
             String error = read(connection.getErrorStream());
             String message = switch (status) {
-                case 401 -> "登录已失效或账号密码有误";
+                case 401 -> path.equals("/login") ? "用户名或密码不正确，或账号已停用" : "登录已失效，请重新登录";
                 case 403 -> "请求未获授权，请重新登录后再试";
                 case 409 -> "当前状态已变化，请刷新后重试";
                 default -> "请求失败（HTTP " + status + "）";
@@ -270,7 +326,9 @@ final class Api {
                 String candidate = value.split(";", 2)[0].trim();
                 if (!candidate.startsWith("JSESSIONID=")) continue;
                 cookie = candidate.equals("JSESSIONID=") ? "" : candidate;
-                preferences.edit().putString("session", cookie).apply();
+                if (persistSession && !username.isEmpty()) {
+                    preferences.edit().putString("session", cookie).apply();
+                }
             }
         }
     }

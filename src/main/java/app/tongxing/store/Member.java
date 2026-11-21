@@ -8,6 +8,9 @@ public class Member {
     public String username;
     public String displayName;
     public String passwordHash;
+    public boolean disabled;
+    public int sessionVersion;
+    public boolean adminLocationAllowed;
     public String pairId;
     public boolean sharing;
     public boolean locationUnavailable;

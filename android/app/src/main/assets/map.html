@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <link rel="stylesheet" href="leaflet.css">
   <style>
     html,body,#map { margin:0; width:100%; height:100%; }
@@ -17,6 +18,8 @@
     .location-pin.partner { background:#a34b50; }
     .location-pin.past { opacity:.68; }
     .leaflet-control-attribution a { color:#17634b; }
+    .map-status { background:#fffdf9; padding:6px 9px; border-radius:10px; color:#21463a; }
+    .map-status button { color:#17634b; background:none; border:0; padding:8px; font-weight:600; }
   </style>
 </head>
 <body>
@@ -26,16 +29,52 @@
   const map = L.map('map', {zoomControl:false, attributionControl:false, minZoom:2, maxZoom:19}).setView([20, 0], 2);
   L.control.zoom({position:"topright"}).addTo(map);
   const overlays = L.layerGroup().addTo(map);
-  window.setStreetMap = function(enabled) {
-    if (!enabled) return;
-    L.control.attribution({position:'topleft', prefix:false}).addTo(map);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxNativeZoom:19,
-      attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
-      updateWhenIdle:true,
-      keepBuffer:0
-    }).addTo(map);
+  L.control.attribution({position:'topleft', prefix:false}).addTo(map);
+  const status = L.control({position:'topleft'});
+  let statusPanel;
+  status.onAdd = () => {
+    statusPanel = L.DomUtil.create('div', 'map-status');
+    statusPanel.hidden = true;
+    statusPanel.setAttribute('role', 'status');
+    statusPanel.append(document.createTextNode('街道底图加载失败。'));
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = '重试';
+    retry.addEventListener('click', () => {
+      statusPanel.hidden = true;
+      streets.redraw();
+    });
+    statusPanel.append(retry);
+    L.DomEvent.disableClickPropagation(statusPanel);
+    return statusPanel;
   };
+  status.addTo(map);
+
+  const streets = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxNativeZoom:19,
+    attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+    updateWhenIdle:true,
+    keepBuffer:1
+  });
+  let loadedTiles = 0;
+  let failedTiles = 0;
+  let tileTimeout;
+  streets.on('loading', () => {
+    loadedTiles = 0;
+    failedTiles = 0;
+    clearTimeout(tileTimeout);
+    tileTimeout = setTimeout(() => { if (!loadedTiles) statusPanel.hidden = false; }, 8000);
+  });
+  streets.on('tileload', () => {
+    loadedTiles++;
+    statusPanel.hidden = true;
+  });
+  streets.on('tileerror', () => { failedTiles++; });
+  streets.on('load', () => {
+    clearTimeout(tileTimeout);
+    statusPanel.hidden = loadedTiles > 0 || failedTiles === 0;
+  });
+  streets.addTo(map);
   let lastMode = '';
   let pointsShown = false;
   let lastHighlight = '';

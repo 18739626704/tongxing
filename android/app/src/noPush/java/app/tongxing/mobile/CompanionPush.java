@@ -7,6 +7,6 @@ import android.os.IBinder;
 
 public final class CompanionPush extends Service {
     static void sync(Context context) {}
-    static void unregister(Context context) {}
+    static void unregister(Context context, Api api) {}
     @Override public IBinder onBind(Intent intent) { return null; }
 }

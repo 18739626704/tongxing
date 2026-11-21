@@ -49,6 +49,65 @@ public class MainActivityTest {
     }
 
     @Test
+    public void registrationExplainsRulesAndMarksInvalidInputs() {
+        Api.get(RuntimeEnvironment.getApplication()).clearSession();
+        try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            View root = controller.get().findViewById(android.R.id.content);
+            text(root, "创建账号").performClick();
+            assertNotNull(text(root, "3–32 位，可用英文字母、数字和下划线，字母会转为小写。"));
+            List<EditText> inputs = views(root, EditText.class);
+            inputs.get(0).setText("http://share.example.com");
+            inputs.get(1).setText("a!");
+            inputs.get(2).setText("123");
+            text(root, "注册并登录").performClick();
+            assertTrue(inputs.get(0).getError().toString().contains("HTTPS"));
+            assertTrue(inputs.get(1).getError().toString().contains("3–32"));
+            assertTrue(inputs.get(2).getError().toString().contains("10–64"));
+        }
+    }
+
+    @Test
+    public void offlineLogoutClearsTheSessionWithoutWaitingForARequest() throws Exception {
+        var api = Api.get(RuntimeEnvironment.getApplication());
+        try (MockWebServer server = new MockWebServer()) {
+            AtomicBoolean refreshStarted = new AtomicBoolean();
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) {
+                    return switch (request.getRequestUrl().encodedPath()) {
+                        case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
+                        case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=test; Path=/; HttpOnly");
+                        case "/api/overview" -> {
+                            refreshStarted.set(true);
+                            yield new MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE);
+                        }
+                        default -> reply(503, "");
+                    };
+                }
+            });
+            server.start();
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "offline", "TestPassword123", false);
+            try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+                View root = controller.get().findViewById(android.R.id.content);
+                await(refreshStarted::get);
+                text(root, "设置").performClick();
+                assertNotNull(text(root, "登录名 · offline"));
+                text(root, "退出登录").performClick();
+                assertNotNull(text(root, "登录"));
+                assertFalse(api.hasSession());
+                assertEquals("", api.savedUsername());
+            }
+        }
+    }
+
+    @Test
+    public void scannerAcceptsOnlyValidTongxingPairCodes() {
+        assertEquals("0123456789ABCDEF", PairQr.scan("tongxing:pair:0123456789abcdef"));
+        assertEquals("0123456789ABCDEF", PairQr.code(" 0123456789abcdef "));
+        assertEquals("", PairQr.scan("https://share.example.com/0123456789abcdef"));
+        assertEquals("", PairQr.scan("tongxing:pair:0123456789abcdeg"));
+    }
+
+    @Test
     @Config(qualifiers = "w360dp-h740dp")
     public void signsInUpdatesPartnerStatusAndShowsDailyTrack() throws Exception {
         Api.get(RuntimeEnvironment.getApplication()).clearSession();
@@ -123,6 +182,7 @@ public class MainActivityTest {
                         .anyMatch(view -> view.getText().toString().contains("位置 刚刚更新 · 电量 81%")));
                 assertTrue(Api.get(RuntimeEnvironment.getApplication()).hasSession());
                 var web = views(root, android.webkit.WebView.class).get(0);
+                assertEquals("https://appassets.androidplatform.net/assets/map.html", shadowOf(web).getLastLoadedUrl());
                 assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().width);
                 assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().height);
                 assertTrue(web.getParent() instanceof android.widget.FrameLayout);

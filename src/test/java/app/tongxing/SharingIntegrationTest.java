@@ -14,6 +14,9 @@ import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -26,6 +29,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class SharingIntegrationTest {
     private static final String PASSWORD = "integration-test-password";
+    @DynamicPropertySource
+    static void adminConfiguration(DynamicPropertyRegistry properties) {
+        String hash = new BCryptPasswordEncoder().encode(PASSWORD);
+        properties.add("ADMIN_USERNAME", () -> "test_operator");
+        properties.add("ADMIN_PASSWORD_HASH", () -> hash);
+    }
+
     @LocalServerPort int port;
     final ObjectMapper json = new ObjectMapper();
 
@@ -42,6 +52,67 @@ class SharingIntegrationTest {
                 "displayName", "Original name", "enrollmentKey", "legacy-placeholder"), 201);
         old.login("old_client");
         assertThat(old.overview().at("/self/displayName").asText()).isEqualTo("Original name");
+    }
+
+    @Test
+    void registrationErrorsIdentifyTheInvalidFields() throws Exception {
+        var invalid = new Client().mutate("POST", "/register", Map.of("username", "!", "password", "123"), 400);
+        assertThat(invalid.at("/fields/username").asText()).contains("3–32");
+        assertThat(invalid.at("/fields/password").asText()).contains("10–64");
+    }
+
+    @Test
+    void adminAccessRequiresSeparateCredentialsAndExplicitLocationConsent() throws Exception {
+        String username = "admin_target";
+        var member = new Client();
+        member.mutate("POST", "/register", Map.of("username", username, "password", PASSWORD), 201);
+        member.login(username);
+        var partner = new Client();
+        partner.signIn("AdminPartner");
+        String confirmation = member.mutate("POST", "/invite", "", 200).path("code").asText();
+        partner.mutate("POST", "/pair", Map.of("code", confirmation), 204);
+        String key = member.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        long now = System.currentTimeMillis();
+        member.mutate("POST", "/positions", sample(key, 10.25, now), 204);
+
+        var operator = new Client();
+        assertThat(operator.admin("GET", "/", "", null).statusCode()).isEqualTo(200);
+        assertThat(operator.admin("GET", "/api/accounts", "", null).statusCode()).isEqualTo(401);
+        assertThat(member.admin("GET", "/api/accounts", "", null).statusCode()).isEqualTo(403);
+        assertThat(member.admin("POST", "/login", "username=" + username + "&password=" + PASSWORD,
+                member.adminToken()).statusCode()).isEqualTo(401);
+        assertThat(operator.admin("POST", "/login", "username=test_operator&password=" + PASSWORD,
+                operator.adminToken()).statusCode()).isEqualTo(204);
+        assertThat(operator.get("/overview").statusCode()).isEqualTo(403);
+
+        var accounts = operator.admin("GET", "/api/accounts?search=" + username, "", null);
+        assertThat(accounts.statusCode()).isEqualTo(200);
+        assertThat(accounts.body()).doesNotContain("passwordHash", "shareKey", "JSESSIONID");
+        String target = "/api/accounts/" + json.readTree(accounts.body()).at("/accounts/0/id").asText();
+        String route = target + "/positions?from=" + (now - 1000) + "&to=" + (now + 1000);
+        assertThat(json.readTree(operator.admin("GET", target, "", null).body()).path("status").isNull()).isTrue();
+        assertThat(operator.admin("GET", route, "", null).statusCode()).isEqualTo(403);
+        member.mutate("PUT", "/admin-location-sharing", Map.of("enabled", true), 204);
+        assertThat(json.readTree(operator.admin("GET", target, "", null).body())
+                .at("/status/lastLocation/latitude").asDouble()).isEqualTo(10.25);
+        assertThat(json.readTree(operator.admin("GET", route, "", null).body()).size()).isEqualTo(1);
+        member.mutate("PUT", "/admin-location-sharing", Map.of("enabled", false), 204);
+        assertThat(operator.admin("GET", route, "", null).statusCode()).isEqualTo(403);
+        member.mutate("PUT", "/admin-location-sharing", Map.of("enabled", true), 204);
+
+        assertThat(operator.admin("PUT", target, "{\"disabled\":true}", null).statusCode()).isEqualTo(403);
+        assertThat(operator.admin("PUT", target, "{\"disabled\":true}", operator.adminToken()).statusCode()).isEqualTo(204);
+        assertThat(partner.overview().at("/partner/sharing").asBoolean()).isFalse();
+        assertThat(operator.admin("GET", route, "", null).statusCode()).isEqualTo(403);
+        var otherSession = new Client();
+        assertThat(otherSession.send("POST", "/login", "username=" + username + "&password=" + PASSWORD,
+                "application/x-www-form-urlencoded", otherSession.token()).statusCode()).isEqualTo(401);
+        assertThat(operator.admin("PUT", target, "{\"disabled\":false}", operator.adminToken()).statusCode()).isEqualTo(204);
+        assertThat(member.get("/overview").statusCode()).isEqualTo(401);
+        otherSession.login(username);
+        assertThat(otherSession.overview().path("adminLocationAllowed").asBoolean()).isFalse();
+        assertThat(operator.admin("GET", "/api/audit", "", null).body())
+                .contains("VIEW_ROUTE", "DISABLE_ACCOUNT", "ENABLE_ACCOUNT");
     }
 
     @Test
@@ -461,9 +532,23 @@ class SharingIntegrationTest {
             return json.readTree(get("/csrf").body());
         }
 
+        private JsonNode adminToken() throws Exception {
+            return json.readTree(admin("GET", "/csrf", "", null).body());
+        }
+
+        private HttpResponse<String> admin(String method, String path, String body, JsonNode token) throws Exception {
+            return sendRoot(method, "/admin" + path, body, path.equals("/login")
+                    ? "application/x-www-form-urlencoded" : "application/json", token);
+        }
+
         private HttpResponse<String> send(String method, String path, String body, String contentType, JsonNode token)
                 throws Exception {
-            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api" + path))
+            return sendRoot(method, "/api" + path, body, contentType, token);
+        }
+
+        private HttpResponse<String> sendRoot(String method, String path, String body, String contentType, JsonNode token)
+                throws Exception {
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
                     .timeout(Duration.ofSeconds(10)).header("Content-Type", contentType)
                     .method(method, HttpRequest.BodyPublishers.ofString(body));
             if (token != null) request.header(token.path("header").asText(), token.path("token").asText());

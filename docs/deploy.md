@@ -22,6 +22,8 @@ openssl rand -hex 24
 | `REGISTRATION_ENABLED` | 默认 `true`，设为 `false` 可关闭新增注册 |
 | `AMAP_ANDROID_KEY` | 可选，标准 APK 使用的 Android 平台地图 SDK Key |
 | `AMAP_WEB_SERVICE_KEY` | 可选，高德 Web 服务 Key，用于到达或离开事件的地点名称 |
+| `ADMIN_USERNAME` | 可选，独立的控制台管理员登录名 |
+| `ADMIN_PASSWORD_HASH` | 可选，管理员密码的 BCrypt 哈希，见下文 |
 | `FCM_SERVICE_ACCOUNT_JSON` | 可选，开启 FCM 的 Firebase 服务账号 JSON，保存为一行 |
 
 ```bash
@@ -42,9 +44,9 @@ curl -fsS https://share.example.com/api/health
 | `DB_USER` | MySQL 用户 |
 | `DB_PASSWORD` | MySQL 密码 |
 | `REGISTRATION_ENABLED` | 可选，默认允许注册 |
-| 地图与推送 | 参照上表的可选变量 |
+| 地图、推送与管理员 | 参照上表的可选变量 |
 
-已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.2.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
+已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.3.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
 
 ## 手机注册
 
@@ -64,6 +66,12 @@ curl -fsS https://share.example.com/api/health
 4. 重启或重新部署服务让变量生效。标准 APK 登录后读取 Android Key，无需在手机填写或因换 Key 重新打包。Web 服务 Key 只由服务端使用，与底图选择独立。Android Key 必须与实际 APK 的包名和签名 SHA-1 匹配。
 
 参考 [Android 地图 SDK 申请指引](https://lbs.amap.com/api/android-sdk/guide/create-project/get-key) 和 [Web 服务 Key 申请指引](https://lbs.amap.com/api/webservice/guide/create-project/get-key)。
+
+### Web 管理控制台
+
+设置 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD_HASH` 后重启服务，通过服务域名的 `/admin/` 登录。该管理员账号由环境变量管理，与手机端注册的账号独立。可以用 `htpasswd -nBC 12 admin` 交互式生成 BCrypt 哈希，将输出中用户名后面的哈希填入 `ADMIN_PASSWORD_HASH`。Docker Compose 的 `.env` 里请用单引号包住哈希，以便按字面读取其中的美元符号。通过部署平台变量界面设置时，直接填哈希值。
+
+管理端可以查询用户账号、查看绑定及共享状态、禁用或恢复账号。禁用会使该账号的已有会话失效并停止共享。用户可在手机「设置 → 权限与共享」单独授权管理员查看已共享位置、足迹和设备状态，也可随时撤回。控制台每 15 秒刷新正在查看的用户状态，实际位置更新时间取决于手机上报。审计记录保留 30 天。
 
 ### Firebase 系统推送
 
