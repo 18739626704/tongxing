@@ -2,7 +2,7 @@
 
 同行是可以自托管的双人位置与状态共享应用。两个人安装 Android 客户端并在同一台服务端注册后，可以通过邀请码建立绑定，查看对方位置和足迹，发送消息、报平安和 SOS。
 
-[下载 Android APK](downloads/tongxing-0.7.0.apk?raw=true) · [部署教程](docs/deploy.md) · [开发与构建](docs/development.md) · [隐私与数据](docs/privacy.md) · [第三方组件](docs/third-party.md)
+[下载 Android APK](downloads/tongxing-0.7.0.apk?raw=true) · [GitHub Releases](../../releases) · [部署教程](docs/deploy.md) · [开发与构建](docs/development.md) · [隐私与数据](docs/privacy.md) · [第三方组件](docs/third-party.md)
 
 ## 开始使用
 
@@ -31,3 +31,7 @@ APK 已签名，可从 [SHA256SUMS](downloads/SHA256SUMS)核对完整性。安�
 | `docs/` | 部署、开发、构建和数据说明 |
 
 欢迎提交 Issue 和 Pull Request。提交前请阅读[贡献指南](CONTRIBUTING.md)，安全问题请参阅[安全报告方式](SECURITY.md)。
+
+## 许可证
+
+同行原创代码采用 [MIT 许可证](LICENSE)。第三方组件继续按[各自的许可证](docs/third-party.md)分发。

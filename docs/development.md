@@ -46,3 +46,7 @@ apksigner verify --verbose --print-certs tongxing.apk
 - `store/` 下是 MyBatis-Plus 实体及映射。MySQL 结构通过 `src/main/resources/db/migration/` 的 Flyway 迁移管理。已经发布的迁移不能就地修改，新增变更请增加迁移文件。
 
 接口受配对关系和授权约束。改动绑定、共享、解绑或 SOS 时，需要兼顾旧客户端、重复请求及数据清理。
+
+## 发布版本
+
+同步更新根目录 `pom.xml` 的服务端版本，以及 `android/app/build.gradle` 的 `versionName` 和 `versionCode`。签名后将默认 APK 及其 SHA-256 清单放在 `downloads/`，更新 README 的直接下载链接。主分支构建通过后，CI 会尝试将签名 APK 和校验文件附加到对应的 GitHub Release。构建和发布流程均无需向 GitHub 提交签名密钥。
