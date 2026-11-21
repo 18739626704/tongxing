@@ -128,7 +128,6 @@ class SharingService {
         String shareKey = enabled ? id() : null;
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
                 .set("sharing", enabled).set("share_key", shareKey));
-        jdbc.update("UPDATE shared_place SET inside = NULL WHERE member_id = ?", self.id);
         if (!enabled) {
             clearInsights(self.id);
             jdbc.update("UPDATE companion_event SET sos_sample_id = NULL WHERE sender_id = ? AND sos_sample_id IS NOT NULL", self.id);
@@ -189,7 +188,7 @@ class SharingService {
                     """, reading.screenMinutes(), reading.screenDate(), self.id,
                     reading.screenDate(), reading.screenDate(), reading.screenMinutes());
         }
-        if (now - sample.recordedAt <= Duration.ofMinutes(3).toMillis()) observePlaces(self, sample);
+        if (self.journeyEnabled && now - sample.recordedAt <= 120_000) recordJourney(self, sample);
     }
 
     @Transactional
@@ -226,8 +225,7 @@ class SharingService {
                 .set("sharing", false).set("share_key", null));
         samples.delete(new QueryWrapper<PositionSample>().eq("member_id", self.id));
         clearInsights(self.id);
-        jdbc.update("DELETE FROM companion_event WHERE sender_id = ? AND kind IN ('ARRIVE', 'LEAVE', 'NETWORK', 'CHARGING', 'MOTION', 'LOW_BATTERY')", self.id);
-        jdbc.update("UPDATE shared_place SET inside = NULL, observed_at = NULL WHERE member_id = ?", self.id);
+        jdbc.update("DELETE FROM companion_event WHERE sender_id = ? AND kind IN ('ARRIVE', 'LEAVE', 'AUTO_ARRIVE', 'AUTO_LEAVE', 'NETWORK', 'CHARGING', 'MOTION', 'LOW_BATTERY')", self.id);
     }
 
     @Scheduled(fixedDelay = 3_600_000)
@@ -330,59 +328,62 @@ class SharingService {
     }
 
     @Transactional
-    public List<Place> places(String username) {
-        guard.lock();
-        return ownPlaces(current(username).id);
-    }
-
-    private List<Place> ownPlaces(String memberId) {
-        return jdbc.query("""
-                SELECT id, name, latitude, longitude, radius, inside, observed_at
-                FROM shared_place WHERE member_id = ? ORDER BY name, id
-                """, (row, i) -> new Place(row.getString("id"), row.getString("name"),
-                row.getDouble("latitude"), row.getDouble("longitude"), row.getInt("radius"),
-                row.getObject("inside", Boolean.class), row.getObject("observed_at", Long.class)), memberId);
-    }
-
-    @Transactional
-    public void addPlace(String username, PlaceInput place) {
+    public void journeySharing(String username, boolean enabled, UUID pairId) {
         guard.lock();
         Member self = current(username);
-        if (ownPlaces(self.id).size() >= 12) throw failure(HttpStatus.CONFLICT, "最多可保存 12 个地点");
-        jdbc.update("INSERT INTO shared_place(id, member_id, name, latitude, longitude, radius) VALUES (?, ?, ?, ?, ?, ?)",
-                id(), self.id, place.name().strip(), place.latitude(), place.longitude(), place.radius());
+        checkPair(self, pairId);
+        if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        if (self.journeyEnabled == enabled) return;
+        jdbc.update("UPDATE member SET journey_enabled = ?, journey_state = NULL WHERE id = ?", enabled, self.id);
     }
 
     @Transactional
-    public void editPlace(String username, UUID id, PlaceSettings options) {
+    public void liveScreenSharing(String username, boolean enabled, UUID pairId) {
         guard.lock();
         Member self = current(username);
-        int changed = jdbc.update("""
-                UPDATE shared_place SET name = ?, radius = ?, inside = NULL, observed_at = NULL
-                WHERE id = ? AND member_id = ?
-                """, options.name().strip(), options.radius(), id.toString(), self.id);
-        if (changed == 0) throw failure(HttpStatus.NOT_FOUND, "常用地点不存在");
+        checkPair(self, pairId);
+        if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        if (self.liveScreenEnabled == enabled) return;
+        jdbc.update("UPDATE member SET live_screen_enabled = ?, live_screen_state = NULL, live_screen_at = NULL WHERE id = ?",
+                enabled, self.id);
     }
 
     @Transactional
-    public void removePlace(String username, UUID id) {
+    public void liveScreen(String username, ScreenReport report) {
         guard.lock();
-        jdbc.update("DELETE FROM shared_place WHERE id = ? AND member_id = ?", id.toString(), current(username).id);
+        Member self = current(username);
+        if (!self.liveScreenEnabled || !self.sharing || self.pairId == null
+                || !report.shareKey().toString().equals(self.shareKey)) {
+            throw failure(HttpStatus.CONFLICT, "屏幕状态未授权共享");
+        }
+        jdbc.update("UPDATE member SET live_screen_state = ?, live_screen_at = ? WHERE id = ?",
+                report.state().name(), System.currentTimeMillis(), self.id);
     }
 
-    private void observePlaces(Member self, PositionSample sample) {
-        for (Place place : ownPlaces(self.id)) {
-            if (sample.accuracy > place.radius() / 2.0
-                    || (place.observedAt() != null && sample.recordedAt <= place.observedAt())) continue;
-            double distance = distanceMeters(place.latitude(), place.longitude(), sample.latitude, sample.longitude);
-            double margin = Math.max(25, sample.accuracy);
-            if (Math.abs(distance - place.radius()) <= margin) continue;
-            boolean inside = distance < place.radius();
-            jdbc.update("UPDATE shared_place SET inside = ?, observed_at = ? WHERE id = ?", inside,
-                    sample.recordedAt, place.id());
-            if (place.inside() != null && inside != place.inside()) {
-                addEvent(self, inside ? "ARRIVE" : "LEAVE", place.name(), sample.recordedAt);
-            }
+    private JourneyDetector.State journeyState(Member self) {
+        if (self.journeyState == null) return null;
+        try {
+            return json.readValue(self.journeyState, JourneyDetector.State.class);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            return null;
+        }
+    }
+
+    private void recordJourney(Member self, PositionSample sample) {
+        JourneyDetector.State state = journeyState(self);
+        var fix = new JourneyDetector.Fix(sample.latitude, sample.longitude, sample.accuracy, sample.recordedAt);
+        var update = JourneyDetector.accept(state, fix);
+        if (update.state() == state) return;
+        try {
+            jdbc.update("UPDATE member SET journey_state = ? WHERE id = ?",
+                    json.writeValueAsString(update.state()), self.id);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            throw new IllegalStateException("Could not store journey state", invalid);
+        }
+        if (update.event() == JourneyDetector.Event.ARRIVE) {
+            addEvent(self, "AUTO_ARRIVE", "已到达新的停留区域", sample.recordedAt);
+        } else if (update.event() == JourneyDetector.Event.LEAVE) {
+            addEvent(self, "AUTO_LEAVE", "已离开上一停留区域", sample.recordedAt);
         }
     }
 
@@ -525,6 +526,7 @@ class SharingService {
     private void clearInsights(String id) {
         jdbc.update("DELETE FROM app_usage_snapshot WHERE member_id = ?", id);
         clearDevice(id);
+        jdbc.update("UPDATE member SET journey_state = NULL, live_screen_state = NULL, live_screen_at = NULL WHERE id = ?", id);
     }
 
     @Transactional
@@ -566,10 +568,19 @@ class SharingService {
         DeviceStatus device = sharing && member.deviceStatusEnabled && member.deviceStatusAt != null
                 ? new DeviceStatus(member.deviceModel, member.networkType, member.deviceStatusAt,
                         member.deviceUnlockedAt, member.deviceMotion) : null;
+        var journeyState = sharing && member.journeyEnabled ? journeyState(member) : null;
+        JourneyStatus journey = journeyState != null && now - journeyState.lastAt() <= 240_000
+                && (journeyState.stopped() || journeyState.inTrip())
+                ? new JourneyStatus(journeyState.stopped() ? "STOPPED" : "TRAVELLING",
+                        journeyState.anchor().at(), journeyState.lastAt()) : null;
+        ScreenStatus screen = sharing && member.liveScreenEnabled && member.liveScreenAt != null
+                && now - member.liveScreenAt <= 90_000
+                ? new ScreenStatus(ScreenState.valueOf(member.liveScreenState), member.liveScreenAt) : null;
         return new Status(member.displayName, sharing, latest == null ? null : point(latest),
                 sharing && member.usageEnabled ? member.screenMinutes : null,
                 sharing && member.usageEnabled ? member.screenDate : null, member.usageEnabled,
-                member.appUsageEnabled, member.deviceStatusEnabled, device);
+                member.appUsageEnabled, member.deviceStatusEnabled, device,
+                member.journeyEnabled, journey, member.liveScreenEnabled, screen);
     }
 
     private PositionSample lastPoint(Member member, long now) {
@@ -586,9 +597,9 @@ class SharingService {
         members.update(null, new UpdateWrapper<Member>().eq("id", member.id).set("pair_id", pairId)
                 .set("sharing", false).set("share_key", null)
                 .set("usage_enabled", false).set("screen_minutes", null).set("screen_date", null)
-                .set("app_usage_enabled", false).set("device_status_enabled", false));
+                .set("app_usage_enabled", false).set("device_status_enabled", false)
+                .set("journey_enabled", false).set("live_screen_enabled", false));
         clearInsights(member.id);
-        jdbc.update("UPDATE shared_place SET inside = NULL, observed_at = NULL WHERE member_id = ?", member.id);
     }
 
     private Member findMember(String username) {

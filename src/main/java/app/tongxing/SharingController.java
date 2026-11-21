@@ -30,7 +30,12 @@ class SharingController {
                    @Pattern(regexp = "WIFI|MOBILE|ETHERNET|VPN|OTHER|OFFLINE") String networkType, @Positive Long unlockedAt) {}
     record Point(double latitude, double longitude, double accuracy, int battery, boolean charging, long recordedAt) {}
     record Status(String displayName, boolean sharing, Point lastLocation, Integer screenMinutes, String screenDate,
-                  boolean usageEnabled, boolean appUsageEnabled, boolean deviceStatusEnabled, DeviceStatus device) {}
+                  boolean usageEnabled, boolean appUsageEnabled, boolean deviceStatusEnabled, DeviceStatus device,
+                  boolean journeyEnabled, JourneyStatus journey, boolean liveScreenEnabled, ScreenStatus liveScreen) {}
+    record JourneyStatus(String state, long since, long updatedAt) {}
+    enum ScreenState { OFF, LOCKED, UNLOCKED }
+    record ScreenStatus(ScreenState state, long updatedAt) {}
+    record ScreenReport(@NotNull UUID shareKey, @NotNull ScreenState state) {}
     record DeviceStatus(String model, String network, long updatedAt, Long unlockedAt, String motion) {}
     record AppDuration(@NotBlank @Size(max = 80) String name, @NotNull @Min(1) @Max(90_000) Integer seconds) {}
     record AppUsageReport(@NotNull UUID shareKey, @NotNull java.time.LocalDate date, @NotNull Long recordedAt,
@@ -45,13 +50,6 @@ class SharingController {
     record Sos(@NotNull Boolean includeLocation) {}
     record CheckIn(@NotNull CheckInKind kind) {}
     enum CheckInKind { GOOD_MORNING, GOOD_NIGHT, ARRIVED, HEADING_OUT }
-    record PlaceInput(@NotBlank @Size(max = 40) String name,
-                      @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
-                      @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
-                      @NotNull @Min(100) @Max(3000) Integer radius) {}
-    record PlaceSettings(@NotBlank @Size(max = 40) String name, @NotNull @Min(100) @Max(3000) Integer radius) {}
-    record Place(String id, String name, double latitude, double longitude, int radius,
-                 Boolean inside, Long observedAt) {}
     record Event(long id, String kind, String text, String sender, boolean incoming, long createdAt, boolean hasLocation) {}
     record Feed(String pairId, List<Event> events) {}
     record PushToken(@NotBlank @Size(max = 512) @Pattern(regexp = "[a-zA-Z0-9:_-]+") String token) {}
@@ -148,21 +146,30 @@ class SharingController {
     }
 
     @GetMapping("/places")
-    List<Place> places(Principal user) { return sharing.places(user.getName()); }
+    List<Object> retiredPlaces() { return List.of(); }
 
-    @PostMapping("/places")
-    @ResponseStatus(HttpStatus.CREATED)
-    void place(Principal user, @Valid @RequestBody PlaceInput place) { sharing.addPlace(user.getName(), place); }
-
-    @PutMapping("/places/{id}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    void editPlace(Principal user, @PathVariable UUID id, @Valid @RequestBody PlaceSettings options) {
-        sharing.editPlace(user.getName(), id, options);
+    @RequestMapping(path = {"/places", "/places/{id}"}, method = {RequestMethod.POST, RequestMethod.PUT, RequestMethod.DELETE})
+    void retiredPlaceUpdates() {
+        throw new org.springframework.web.server.ResponseStatusException(HttpStatus.GONE, "手动地点围栏已停用");
     }
 
-    @DeleteMapping("/places/{id}")
+    @PutMapping("/journey-sharing")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    void removePlace(Principal user, @PathVariable UUID id) { sharing.removePlace(user.getName(), id); }
+    void journeySharing(Principal user, @Valid @RequestBody Consent consent) {
+        sharing.journeySharing(user.getName(), consent.enabled(), consent.pairId());
+    }
+
+    @PutMapping("/live-screen-sharing")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void liveScreenSharing(Principal user, @Valid @RequestBody Consent consent) {
+        sharing.liveScreenSharing(user.getName(), consent.enabled(), consent.pairId());
+    }
+
+    @PutMapping("/live-screen")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void liveScreen(Principal user, @Valid @RequestBody ScreenReport report) {
+        sharing.liveScreen(user.getName(), report);
+    }
 
     @GetMapping("/sharing")
     ShareState resumeSharing(Principal user) { return sharing.resumeSharing(user.getName()); }

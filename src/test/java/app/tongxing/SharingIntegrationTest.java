@@ -121,7 +121,7 @@ class SharingIntegrationTest {
         assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("SOS");
         assertThat(bob.feed().at("/events/2/text").asText()).isEqualTo("到家告诉我");
 
-        alice.mutate("POST", "/places", Map.of("name", "家", "latitude", 34.76, "longitude", 113.65, "radius", 250), 201);
+        alice.mutate("POST", "/places", Map.of("name", "家", "latitude", 34.76, "longitude", 113.65, "radius", 250), 410);
         alice.mutate("PUT", "/usage-sharing", Map.of("enabled", true), 204);
         String key = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
         long time = System.currentTimeMillis();
@@ -130,10 +130,10 @@ class SharingIntegrationTest {
         arrival.put("screenDate", "2026-11-21");
         arrival.put("screenMinutes", 73);
         alice.mutate("POST", "/positions", arrival, 204);
-        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("ARRIVE");
+        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("SOS");
         assertThat(bob.overview().at("/partner/screenMinutes").asInt()).isEqualTo(73);
         alice.mutate("POST", "/positions", sample(key, 34.77, time), 204);
-        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("LEAVE");
+        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("SOS");
         alice.mutate("PUT", "/usage-sharing", Map.of("enabled", false), 204);
         assertThat(bob.overview().at("/partner/screenMinutes").isNull()).isTrue();
         alice.mutate("DELETE", "/account", Map.of("password", "wrong-password"), 403);
@@ -224,17 +224,6 @@ class SharingIntegrationTest {
         String invite = alice.mutate("POST", "/invite", "", 200).path("code").asText();
         bob.mutate("POST", "/pair", Map.of("code", invite), 204);
 
-        alice.mutate("POST", "/places", Map.of("name", "家", "radius", 250,
-                "latitude", 34.76, "longitude", 113.65), 201);
-        String placeId = json.readTree(alice.get("/places").body()).at("/0/id").asText();
-        Map<String, Object> edit = Map.of("name", "新家", "radius", 400);
-        bob.mutate("PUT", "/places/" + placeId, edit, 404);
-        alice.mutate("PUT", "/places/" + placeId, edit, 204);
-        var place = json.readTree(alice.get("/places").body()).get(0);
-        assertThat(place.path("name").asText()).isEqualTo("新家");
-        assertThat(place.path("radius").asInt()).isEqualTo(400);
-        assertThat(place.path("latitude").asDouble()).isEqualTo(34.76);
-
         outsider.mutate("POST", "/check-ins", Map.of("kind", "GOOD_NIGHT"), 409);
         alice.mutate("POST", "/check-ins", Map.of("kind", "INVALID"), 400);
         alice.mutate("POST", "/check-ins", Map.of("kind", "ARRIVED"), 204);
@@ -281,6 +270,36 @@ class SharingIntegrationTest {
         bob.mutate("POST", "/positions", sample(bobKey, 34.78, now - 360_000), 204);
         bob.mutate("POST", "/sos", Map.of("includeLocation", true), 204);
         assertThat(alice.feed().at("/events/0/hasLocation").asBoolean()).isFalse();
+    }
+
+    @Test
+    void stopsLegacyFencesAndSharesOnlyCurrentOptedInScreenState() throws Exception {
+        Client alice = new Client();
+        Client bob = new Client();
+        alice.signIn("Alice");
+        bob.signIn("Bob");
+        bob.mutate("POST", "/pair", Map.of("code", alice.mutate("POST", "/invite", "", 200).path("code").asText()), 204);
+        assertThat(json.readTree(alice.get("/places").body()).isEmpty()).isTrue();
+        String key = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        Map<String, String> snapshot = Map.of("shareKey", key, "state", "UNLOCKED");
+        alice.mutate("PUT", "/live-screen", snapshot, 409);
+        alice.mutate("PUT", "/live-screen-sharing", Map.of("enabled", true), 204);
+        alice.mutate("PUT", "/live-screen", snapshot, 204);
+        assertThat(bob.overview().at("/partner/liveScreen/state").asText()).isEqualTo("UNLOCKED");
+        assertThat(bob.feed().path("events").isEmpty()).isTrue();
+        alice.mutate("PUT", "/live-screen-sharing", Map.of("enabled", false), 204);
+        assertThat(bob.overview().at("/partner/liveScreen").isNull()).isTrue();
+
+        alice.mutate("PUT", "/journey-sharing", Map.of("enabled", true), 204);
+        long now = System.currentTimeMillis();
+        // The detector accepts slightly future device times, allowing a full baseline to be tested without waiting.
+        for (int offset : new int[]{-110, -50, 10, 70}) {
+            alice.mutate("POST", "/positions", sample(key, 34.76, now + offset * 1000L), 204);
+        }
+        assertThat(bob.overview().at("/partner/journey/state").asText()).isEqualTo("STOPPED");
+        assertThat(bob.feed().path("events").isEmpty()).isTrue();
+        alice.mutate("PUT", "/journey-sharing", Map.of("enabled", false), 204);
+        assertThat(bob.overview().at("/partner/journey").isNull()).isTrue();
     }
 
     private Map<String, Object> sample(String shareKey, double latitude, long time) {

@@ -1,0 +1,5 @@
+ALTER TABLE member ADD COLUMN journey_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE member ADD COLUMN journey_state TEXT;
+ALTER TABLE member ADD COLUMN live_screen_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE member ADD COLUMN live_screen_state VARCHAR(12);
+ALTER TABLE member ADD COLUMN live_screen_at BIGINT;

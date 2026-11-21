@@ -22,4 +22,9 @@ public class Member {
     public String candidateMotion;
     public Integer screenMinutes;
     public String screenDate;
+    public boolean journeyEnabled;
+    public String journeyState;
+    public boolean liveScreenEnabled;
+    public String liveScreenState;
+    public Long liveScreenAt;
 }
