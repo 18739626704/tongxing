@@ -143,6 +143,67 @@ class SharingIntegrationTest {
         assertThat(alice.get("/overview").statusCode()).isEqualTo(401);
     }
 
+    @Test
+    void resumesOnlyActiveSharingAndRestrictsOptionalReportsToConsentingPartners() throws Exception {
+        Client alice = new Client();
+        Client bob = new Client();
+        Client outsider = new Client();
+        alice.signIn("Alice");
+        bob.signIn("Bob");
+        outsider.signIn("Outsider");
+        String invite = alice.mutate("POST", "/invite", "", 200).path("code").asText();
+        bob.mutate("POST", "/pair", Map.of("code", invite), 204);
+
+        outsider.mutate("POST", "/routine", Map.of("resting", true), 409);
+        alice.mutate("POST", "/routine", Map.of("resting", true), 204);
+        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("ROUTINE");
+        assertThat(bob.feed().at("/events/0/text").asText()).isEqualTo("开始休息");
+        assertThat(outsider.feed().path("events").isEmpty()).isTrue();
+
+        assertThat(alice.get("/sharing").statusCode()).isEqualTo(409);
+        String key = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        var resumed = alice.get("/sharing");
+        assertThat(resumed.statusCode()).isEqualTo(200);
+        assertThat(json.readTree(resumed.body()).path("shareKey").asText()).isEqualTo(key);
+        assertThat(bob.get("/sharing").statusCode()).isEqualTo(409);
+
+        long now = System.currentTimeMillis();
+        String date = java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString();
+        Map<String, Object> report = Map.of("shareKey", key, "date", date,
+                "recordedAt", now, "apps", java.util.List.of(Map.of("name", "阅读", "seconds", 120)));
+        alice.mutate("PUT", "/app-usage", report, 409);
+        assertThat(bob.get("/app-usage").statusCode()).isEqualTo(404);
+        alice.mutate("PUT", "/app-usage-sharing", Map.of("enabled", true), 204);
+        alice.mutate("PUT", "/app-usage", report, 204);
+        assertThat(outsider.get("/app-usage").statusCode()).isEqualTo(404);
+        assertThat(json.readTree(bob.get("/app-usage").body()).at("/apps/0/seconds").asInt()).isEqualTo(120);
+
+        var position = new java.util.HashMap<>(sample(key, 34.76, now));
+        position.put("deviceModel", "Test Phone");
+        position.put("networkType", "WIFI");
+        position.put("unlockedAt", now - 1000);
+        alice.mutate("POST", "/positions", position, 204);
+        assertThat(bob.overview().at("/partner/device").isNull()).isTrue();
+        alice.mutate("PUT", "/device-status-sharing", Map.of("enabled", true), 204);
+        position.put("id", UUID.randomUUID().toString());
+        position.put("recordedAt", now + 1);
+        alice.mutate("POST", "/positions", position, 204);
+        assertThat(bob.overview().at("/partner/device/model").asText()).isEqualTo("Test Phone");
+        assertThat(bob.overview().at("/partner/device/unlockedAt").asLong()).isEqualTo(now - 1000);
+        alice.mutate("PUT", "/device-status-sharing", Map.of("enabled", false), 204);
+        assertThat(bob.overview().at("/partner/device").isNull()).isTrue();
+
+        alice.mutate("PUT", "/app-usage-sharing", Map.of("enabled", false), 204);
+        assertThat(bob.get("/app-usage").statusCode()).isEqualTo(404);
+        alice.mutate("PUT", "/app-usage-sharing", Map.of("enabled", true), 204);
+        assertThat(json.readTree(bob.get("/app-usage").body()).path("apps").isEmpty()).isTrue();
+        alice.mutate("PUT", "/sharing", Map.of("enabled", false), 200);
+        assertThat(alice.get("/sharing").statusCode()).isEqualTo(409);
+        assertThat(bob.get("/app-usage").statusCode()).isEqualTo(404);
+        alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200);
+        alice.mutate("PUT", "/app-usage", report, 409);
+    }
+
     private Map<String, Object> sample(String shareKey, double latitude, long time) {
         return Map.of("id", UUID.randomUUID().toString(), "shareKey", shareKey,
                 "latitude", latitude, "longitude", 113.65, "accuracy", 8,

@@ -25,14 +25,23 @@ class SharingController {
                    @NotNull @DecimalMin("0") @DecimalMax("10000") Double accuracy,
                    @NotNull @Min(-1) @Max(100) Integer battery, @NotNull Boolean charging,
                    @NotNull Long recordedAt, @Min(0) @Max(1500) Integer screenMinutes,
-                   @Pattern(regexp = "[0-9]{4}-[0-9]{2}-[0-9]{2}") String screenDate) {}
+                   @Pattern(regexp = "[0-9]{4}-[0-9]{2}-[0-9]{2}") String screenDate,
+                   @Size(max = 80) String deviceModel,
+                   @Pattern(regexp = "WIFI|MOBILE|ETHERNET|VPN|OTHER|OFFLINE") String networkType, @Positive Long unlockedAt) {}
     record Point(double latitude, double longitude, double accuracy, int battery, boolean charging, long recordedAt) {}
-    record Status(String displayName, boolean sharing, Point lastLocation, Integer screenMinutes, String screenDate, boolean usageEnabled) {}
+    record Status(String displayName, boolean sharing, Point lastLocation, Integer screenMinutes, String screenDate,
+                  boolean usageEnabled, boolean appUsageEnabled, boolean deviceStatusEnabled, DeviceStatus device) {}
+    record DeviceStatus(String model, String network, long updatedAt, Long unlockedAt, String motion) {}
+    record AppDuration(@NotBlank @Size(max = 80) String name, @NotNull @Min(1) @Max(90_000) Integer seconds) {}
+    record AppUsageReport(@NotNull UUID shareKey, @NotNull java.time.LocalDate date, @NotNull Long recordedAt,
+                          @NotNull @Size(max = 200) List<@NotNull @Valid AppDuration> apps) {}
+    record AppUsageSnapshot(String date, long recordedAt, List<AppDuration> apps) {}
     record Overview(Status self, Status partner, long serverTime) {}
     record ShareState(String shareKey) {}
     record InviteCode(String code, long expiresAt) {}
 
     record Message(@NotBlank @Size(max = 500) String text) {}
+    record Routine(@NotNull Boolean resting) {}
     record PlaceInput(@NotBlank @Size(max = 40) String name,
                       @NotNull @DecimalMin("-90") @DecimalMax("90") Double latitude,
                       @NotNull @DecimalMin("-180") @DecimalMax("180") Double longitude,
@@ -105,6 +114,12 @@ class SharingController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void remind(Principal user) { sharing.interact(user.getName(), "REMINDER", "记得休息一下"); }
 
+    @PostMapping("/routine")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void routine(Principal user, @Valid @RequestBody Routine routine) {
+        sharing.interact(user.getName(), "ROUTINE", routine.resting() ? "开始休息" : "已起床");
+    }
+
     @PostMapping("/sos")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void sos(Principal user) { sharing.interact(user.getName(), "SOS", "请尽快联系我，我需要帮助"); }
@@ -119,6 +134,30 @@ class SharingController {
     @DeleteMapping("/places/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void removePlace(Principal user, @PathVariable UUID id) { sharing.removePlace(user.getName(), id); }
+
+    @GetMapping("/sharing")
+    ShareState resumeSharing(Principal user) { return sharing.resumeSharing(user.getName()); }
+
+    @PutMapping("/app-usage-sharing")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void appUsageSharing(Principal user, @Valid @RequestBody Consent consent) {
+        sharing.appUsageSharing(user.getName(), consent.enabled());
+    }
+
+    @PutMapping("/app-usage")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void appUsage(Principal user, @Valid @RequestBody AppUsageReport report) {
+        sharing.saveAppUsage(user.getName(), report);
+    }
+
+    @GetMapping("/app-usage")
+    AppUsageSnapshot appUsage(Principal user) { return sharing.partnerAppUsage(user.getName()); }
+
+    @PutMapping("/device-status-sharing")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void deviceStatusSharing(Principal user, @Valid @RequestBody Consent consent) {
+        sharing.deviceStatusSharing(user.getName(), consent.enabled());
+    }
 
     @PutMapping("/usage-sharing")
     @ResponseStatus(HttpStatus.NO_CONTENT)

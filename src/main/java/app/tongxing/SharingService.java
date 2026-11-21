@@ -33,18 +33,20 @@ class SharingService {
     private final PositionSampleMapper samples;
     private final WriteGuard guard;
     private final JdbcTemplate jdbc;
+    private final com.fasterxml.jackson.databind.ObjectMapper json;
     private final PasswordEncoder passwords;
     private final byte[] enrollmentKey;
     private final SecureRandom random = new SecureRandom();
 
     SharingService(MemberMapper members, InvitationMapper invitations, PositionSampleMapper samples, WriteGuard guard,
-                   PasswordEncoder passwords, JdbcTemplate jdbc, @Value("${tongxing.enrollment-key}") String enrollmentKey) {
+                   PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json, @Value("${tongxing.enrollment-key}") String enrollmentKey) {
         this.members = members;
         this.invitations = invitations;
         this.samples = samples;
         this.guard = guard;
         this.passwords = passwords;
         this.jdbc = jdbc;
+        this.json = json;
         this.enrollmentKey = enrollmentKey.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -123,7 +125,18 @@ class SharingService {
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
                 .set("sharing", enabled).set("share_key", shareKey));
         jdbc.update("UPDATE shared_place SET inside = NULL WHERE member_id = ?", self.id);
+        if (!enabled) clearInsights(self.id);
         return new ShareState(shareKey);
+    }
+
+    @Transactional
+    public ShareState resumeSharing(String username) {
+        guard.lock();
+        Member member = current(username);
+        if (!member.sharing || member.pairId == null || member.shareKey == null) {
+            throw failure(HttpStatus.CONFLICT, "位置共享已暂停");
+        }
+        return new ShareState(member.shareKey);
     }
 
     @Transactional
@@ -148,7 +161,12 @@ class SharingService {
         sample.battery = reading.battery();
         sample.charging = reading.charging();
         sample.recordedAt = reading.recordedAt();
+        PositionSample previous = self.deviceStatusEnabled ? lastPoint(self, now) : null;
         samples.insert(sample);
+        if (self.deviceStatusEnabled && reading.networkType() != null && now - sample.recordedAt <= 180_000
+                && (self.deviceStatusAt == null || sample.recordedAt > self.deviceStatusAt)) {
+            recordDeviceStatus(self, reading, sample, previous, now);
+        }
         if (self.usageEnabled && reading.screenMinutes() != null && reading.screenDate() != null) {
             jdbc.update("""
                     UPDATE member SET screen_minutes = ?, screen_date = ?
@@ -193,7 +211,8 @@ class SharingService {
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
                 .set("sharing", false).set("share_key", null));
         samples.delete(new QueryWrapper<PositionSample>().eq("member_id", self.id));
-        jdbc.update("DELETE FROM companion_event WHERE sender_id = ? AND kind IN ('ARRIVE', 'LEAVE')", self.id);
+        clearInsights(self.id);
+        jdbc.update("DELETE FROM companion_event WHERE sender_id = ? AND kind IN ('ARRIVE', 'LEAVE', 'NETWORK', 'CHARGING', 'MOTION')", self.id);
         jdbc.update("UPDATE shared_place SET inside = NULL, observed_at = NULL WHERE member_id = ?", self.id);
     }
 
@@ -206,6 +225,7 @@ class SharingService {
         invitations.delete(new QueryWrapper<Invitation>().le("expires_at", now));
         jdbc.update("DELETE FROM companion_event WHERE created_at < ?", now - RETENTION);
         jdbc.update("DELETE FROM push_device WHERE refreshed_at < ?", now - RETENTION);
+        jdbc.update("DELETE FROM app_usage_snapshot WHERE recorded_at < ?", now - DAY);
     }
 
     @Transactional
@@ -307,6 +327,128 @@ class SharingService {
     }
 
     @Transactional
+    public void appUsageSharing(String username, boolean enabled) {
+        guard.lock();
+        Member self = current(username);
+        if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        jdbc.update("UPDATE member SET app_usage_enabled = ? WHERE id = ?", enabled, self.id);
+        if (!enabled) jdbc.update("DELETE FROM app_usage_snapshot WHERE member_id = ?", self.id);
+    }
+
+    @Transactional
+    public void deviceStatusSharing(String username, boolean enabled) {
+        guard.lock();
+        Member self = current(username);
+        if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        jdbc.update("UPDATE member SET device_status_enabled = ? WHERE id = ?", enabled, self.id);
+        if (!enabled) {
+            clearDevice(self.id);
+            jdbc.update("DELETE FROM companion_event WHERE sender_id = ? AND kind IN ('NETWORK', 'CHARGING', 'MOTION')", self.id);
+        }
+    }
+
+    @Transactional
+    public void saveAppUsage(String username, AppUsageReport report) {
+        guard.lock();
+        Member self = current(username);
+        if (self.pairId == null || !self.sharing || !self.appUsageEnabled
+                || !report.shareKey().toString().equals(self.shareKey)) {
+            throw failure(HttpStatus.CONFLICT, "应用明细共享已暂停");
+        }
+        long now = System.currentTimeMillis();
+        var utc = java.time.LocalDate.ofInstant(java.time.Instant.ofEpochMilli(report.recordedAt()), java.time.ZoneOffset.UTC);
+        if (report.recordedAt() < now - 300_000 || report.recordedAt() > now + 120_000
+                || report.date().isBefore(utc.minusDays(1)) || report.date().isAfter(utc.plusDays(1))) {
+            throw failure(HttpStatus.BAD_REQUEST, "明细日期或采集时间无效");
+        }
+        List<Long> previous = jdbc.query("SELECT recorded_at FROM app_usage_snapshot WHERE member_id = ?",
+                (row, index) -> row.getLong(1), self.id);
+        if (!previous.isEmpty() && previous.getFirst() >= report.recordedAt()) return;
+        String payload;
+        try {
+            payload = json.writeValueAsString(report.apps());
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+            throw new IllegalStateException("Could not encode application totals", error);
+        }
+        if (previous.isEmpty()) {
+            jdbc.update("INSERT INTO app_usage_snapshot(member_id, usage_date, recorded_at, apps_json) VALUES (?, ?, ?, ?)",
+                    self.id, report.date().toString(), report.recordedAt(), payload);
+        } else {
+            jdbc.update("UPDATE app_usage_snapshot SET usage_date = ?, recorded_at = ?, apps_json = ? WHERE member_id = ?",
+                    report.date().toString(), report.recordedAt(), payload, self.id);
+        }
+    }
+
+    @Transactional
+    public AppUsageSnapshot partnerAppUsage(String username) {
+        guard.lock();
+        Member partner = partnerOf(current(username));
+        if (partner == null || !partner.sharing || !partner.appUsageEnabled) {
+            throw failure(HttpStatus.NOT_FOUND, "对方未共享应用使用明细");
+        }
+        var rows = jdbc.query("""
+                SELECT usage_date, recorded_at, apps_json FROM app_usage_snapshot
+                WHERE member_id = ? AND recorded_at >= ?
+                """, (row, index) -> {
+            try {
+                List<AppDuration> apps = json.readValue(row.getString("apps_json"),
+                        new com.fasterxml.jackson.core.type.TypeReference<List<AppDuration>>() {});
+                return new AppUsageSnapshot(row.getString("usage_date"), row.getLong("recorded_at"), apps);
+            } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+                throw new IllegalStateException("Could not read application totals", error);
+            }
+        }, partner.id, System.currentTimeMillis() - DAY);
+        return rows.isEmpty() ? new AppUsageSnapshot(null, 0, List.of()) : rows.getFirst();
+    }
+
+    private void recordDeviceStatus(Member self, Reading reading, PositionSample sample, PositionSample previous, long now) {
+        if (self.networkType != null && !self.networkType.equals(reading.networkType())) {
+            addEvent(self, "NETWORK", reading.networkType(), sample.recordedAt);
+        }
+        if (self.deviceStatusAt != null && previous != null && previous.recordedAt < sample.recordedAt
+                && previous.charging != sample.charging) {
+            addEvent(self, "CHARGING", sample.charging ? "开始充电" : "已停止充电", sample.recordedAt);
+        }
+        Long unlock = reading.unlockedAt();
+        if (unlock != null && (unlock < now - DAY || unlock > now + 120_000)) unlock = null;
+        String candidate = motion(previous, sample);
+        String settled = self.deviceMotion;
+        boolean stale = self.deviceStatusAt != null && sample.recordedAt - self.deviceStatusAt > 180_000;
+        if (stale) settled = null;
+        if (candidate != null && !stale && candidate.equals(self.candidateMotion) && !candidate.equals(settled)) {
+            if (settled != null) addEvent(self, "MOTION", candidate, sample.recordedAt);
+            settled = candidate;
+        }
+        jdbc.update("""
+                UPDATE member SET device_model = ?, network_type = ?, device_status_at = ?,
+                    device_unlocked_at = ?, device_motion = ?, candidate_motion = ?
+                WHERE id = ?
+                """, reading.deviceModel(), reading.networkType(), sample.recordedAt, unlock, settled, candidate, self.id);
+    }
+
+    private static String motion(PositionSample previous, PositionSample sample) {
+        if (previous == null || previous.accuracy > 50 || sample.accuracy > 50) return null;
+        long elapsed = sample.recordedAt - previous.recordedAt;
+        if (elapsed < 10_000 || elapsed > 90_000) return null;
+        double observed = distanceMeters(previous.latitude, previous.longitude, sample.latitude, sample.longitude);
+        double distance = Math.max(0, observed - previous.accuracy - sample.accuracy);
+        double metersPerSecond = distance / (elapsed / 1000.0);
+        if (metersPerSecond > 70) return null;
+        if (metersPerSecond >= 6) return "FAST";
+        if (metersPerSecond >= .65) return "MOVING";
+        return "STILL";
+    }
+
+    private void clearDevice(String id) {
+        jdbc.update("UPDATE member SET device_model = NULL, network_type = NULL, device_status_at = NULL, device_unlocked_at = NULL, device_motion = NULL, candidate_motion = NULL WHERE id = ?", id);
+    }
+
+    private void clearInsights(String id) {
+        jdbc.update("DELETE FROM app_usage_snapshot WHERE member_id = ?", id);
+        clearDevice(id);
+    }
+
+    @Transactional
     public void pushToken(String username, String token, boolean enabled) {
         guard.lock();
         Member self = current(username);
@@ -335,16 +477,26 @@ class SharingService {
         jdbc.update("DELETE FROM shared_place WHERE member_id = ?", member.id);
         samples.delete(new QueryWrapper<PositionSample>().eq("member_id", member.id));
         jdbc.update("DELETE FROM push_device WHERE member_id = ?", member.id);
+        clearInsights(member.id);
         members.deleteById(member.id);
     }
 
     private Status status(Member member, long now) {
-        if (!member.sharing || member.pairId == null) return new Status(member.displayName, false, null, null, null, member.usageEnabled);
+        boolean sharing = member.sharing && member.pairId != null;
+        PositionSample latest = sharing ? lastPoint(member, now) : null;
+        DeviceStatus device = sharing && member.deviceStatusEnabled && member.deviceStatusAt != null
+                ? new DeviceStatus(member.deviceModel, member.networkType, member.deviceStatusAt,
+                        member.deviceUnlockedAt, member.deviceMotion) : null;
+        return new Status(member.displayName, sharing, latest == null ? null : point(latest),
+                sharing && member.usageEnabled ? member.screenMinutes : null,
+                sharing && member.usageEnabled ? member.screenDate : null, member.usageEnabled,
+                member.appUsageEnabled, member.deviceStatusEnabled, device);
+    }
+
+    private PositionSample lastPoint(Member member, long now) {
         List<PositionSample> latest = samples.selectList(query(member).ge("recorded_at", now - RETENTION)
                 .orderByDesc("recorded_at", "id").last("LIMIT 1"));
-        return new Status(member.displayName, true, latest.isEmpty() ? null : point(latest.getFirst()),
-                member.usageEnabled ? member.screenMinutes : null,
-                member.usageEnabled ? member.screenDate : null, member.usageEnabled);
+        return latest.isEmpty() ? null : latest.getFirst();
     }
 
     private QueryWrapper<PositionSample> query(Member member) {
@@ -354,7 +506,9 @@ class SharingService {
     private void setPair(Member member, String pairId) {
         members.update(null, new UpdateWrapper<Member>().eq("id", member.id).set("pair_id", pairId)
                 .set("sharing", false).set("share_key", null)
-                .set("usage_enabled", false).set("screen_minutes", null).set("screen_date", null));
+                .set("usage_enabled", false).set("screen_minutes", null).set("screen_date", null)
+                .set("app_usage_enabled", false).set("device_status_enabled", false));
+        clearInsights(member.id);
         jdbc.update("UPDATE shared_place SET inside = NULL, observed_at = NULL WHERE member_id = ?", member.id);
     }
 
