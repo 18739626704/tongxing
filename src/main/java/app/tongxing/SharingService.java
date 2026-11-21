@@ -182,7 +182,7 @@ class SharingService {
         sample.recordedAt = reading.recordedAt();
         PositionSample previous = self.deviceStatusEnabled ? lastPoint(self, now) : null;
         samples.insert(sample);
-        if (self.deviceStatusEnabled && reading.networkType() != null && now - sample.recordedAt <= 180_000
+        if (self.deviceStatusEnabled && (reading.networkType() != null || reading.deviceModel() != null) && now - sample.recordedAt <= 180_000
                 && (self.deviceStatusAt == null || sample.recordedAt > self.deviceStatusAt)) {
             recordDeviceStatus(self, reading, sample, previous, now);
             notifyLowBattery(self, sample, previous, now);
@@ -259,7 +259,7 @@ class SharingService {
                 FROM companion_event e JOIN member m ON e.sender_id = m.id
                 LEFT JOIN position_sample p ON p.id = e.sos_sample_id AND p.pair_id = e.pair_id
                     AND p.member_id = m.id AND m.sharing = TRUE AND e.created_at >= ?
-                WHERE e.pair_id = ? AND e.id < ? AND e.created_at >= ?
+                WHERE e.pair_id = ? AND e.id < ? AND (e.kind <> 'NETWORK' OR e.body IN ('WIFI', 'MOBILE')) AND e.created_at >= ?
                 ORDER BY e.id DESC LIMIT 80
                 """, (row, i) -> new Event(row.getLong("id"), row.getString("kind"), row.getString("body"),
                 row.getString("display_name"), !self.id.equals(row.getString("sender_id")), row.getLong("created_at"),
@@ -501,15 +501,20 @@ class SharingService {
     }
 
     private void recordDeviceStatus(Member self, Reading reading, PositionSample sample, PositionSample previous, long now) {
-        if (self.networkType != null && !self.networkType.equals(reading.networkType())) {
-            addEvent(self, "NETWORK", reading.networkType(), sample.recordedAt);
+        String previousNetwork = visibleNetwork(self.networkType);
+        String network = visibleNetwork(reading.networkType());
+        if (network != null && previousNetwork != null && !network.equals(previousNetwork)) {
+            addEvent(self, "NETWORK", network, sample.recordedAt);
         }
+        if (network == null) network = previousNetwork;
         if (self.deviceStatusAt != null && previous != null && previous.recordedAt < sample.recordedAt
                 && previous.charging != sample.charging) {
             addEvent(self, "CHARGING", sample.charging ? "开始充电" : "已停止充电", sample.recordedAt);
         }
         Long unlock = reading.unlockedAt();
-        if (unlock != null && (unlock < now - DAY || unlock > now + 120_000)) unlock = null;
+        if (unlock == null || unlock < now - DAY || unlock > now + 120_000
+                || (self.deviceUnlockedAt != null && unlock < self.deviceUnlockedAt)) unlock = self.deviceUnlockedAt;
+        String model = reading.deviceModel() == null || reading.deviceModel().isBlank() ? self.deviceModel : reading.deviceModel();
         String candidate = motion(previous, sample);
         String settled = self.deviceMotion;
         boolean stale = self.deviceStatusAt != null && sample.recordedAt - self.deviceStatusAt > 180_000;
@@ -522,7 +527,11 @@ class SharingService {
                 UPDATE member SET device_model = ?, network_type = ?, device_status_at = ?,
                     device_unlocked_at = ?, device_motion = ?, candidate_motion = ?
                 WHERE id = ?
-                """, reading.deviceModel(), reading.networkType(), sample.recordedAt, unlock, settled, candidate, self.id);
+                """, model, network, sample.recordedAt, unlock, settled, candidate, self.id);
+    }
+
+    private static String visibleNetwork(String value) {
+        return "WIFI".equals(value) || "MOBILE".equals(value) ? value : null;
     }
 
     private static String motion(PositionSample previous, PositionSample sample) {
@@ -585,7 +594,7 @@ class SharingService {
         boolean sharing = member.sharing && member.pairId != null;
         PositionSample latest = sharing ? lastPoint(member, now) : null;
         DeviceStatus device = sharing && member.deviceStatusEnabled && member.deviceStatusAt != null
-                ? new DeviceStatus(member.deviceModel, member.networkType, member.deviceStatusAt,
+                ? new DeviceStatus(member.deviceModel, visibleNetwork(member.networkType), member.deviceStatusAt,
                         member.deviceUnlockedAt, member.deviceMotion) : null;
         var journeyState = sharing && member.journeyEnabled ? journeyState(member) : null;
         JourneyStatus journey = journeyState != null && now - journeyState.lastAt() <= 240_000
@@ -593,7 +602,6 @@ class SharingService {
                 ? new JourneyStatus(journeyState.stopped() ? "STOPPED" : "TRAVELLING",
                         journeyState.anchor().at(), journeyState.lastAt()) : null;
         ScreenStatus screen = sharing && member.liveScreenEnabled && member.liveScreenAt != null
-                && now - member.liveScreenAt <= 90_000
                 ? new ScreenStatus(ScreenState.valueOf(member.liveScreenState), member.liveScreenAt) : null;
         return new Status(member.displayName, sharing, latest == null ? null : point(latest),
                 sharing && member.usageEnabled ? member.screenMinutes : null,

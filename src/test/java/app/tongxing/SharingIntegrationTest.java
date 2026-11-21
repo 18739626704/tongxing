@@ -213,6 +213,14 @@ class SharingIntegrationTest {
         alice.mutate("POST", "/positions", position, 204);
         assertThat(bob.overview().at("/partner/device/model").asText()).isEqualTo("Test Phone");
         assertThat(bob.overview().at("/partner/device/unlockedAt").asLong()).isEqualTo(now - 1000);
+        position.put("id", UUID.randomUUID().toString());
+        position.put("recordedAt", now + 2);
+        position.put("networkType", "VPN");
+        position.remove("unlockedAt");
+        alice.mutate("POST", "/positions", position, 204);
+        assertThat(bob.overview().at("/partner/device/network").asText()).isEqualTo("WIFI");
+        assertThat(bob.overview().at("/partner/device/unlockedAt").asLong()).isEqualTo(now - 1000);
+        assertThat(bob.feed().path("events").findValuesAsText("text")).doesNotContain("VPN");
         alice.mutate("PUT", "/device-status-sharing", Map.of("enabled", false), 204);
         assertThat(bob.overview().at("/partner/device").isNull()).isTrue();
 
