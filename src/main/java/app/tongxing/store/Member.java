@@ -11,4 +11,7 @@ public class Member {
     public String pairId;
     public boolean sharing;
     public String shareKey;
+    public boolean usageEnabled;
+    public Integer screenMinutes;
+    public String screenDate;
 }

@@ -103,6 +103,46 @@ class SharingIntegrationTest {
         assertThat(new int[]{result1.get(), result2.get()}).containsExactlyInAnyOrder(204, 409);
     }
 
+    @Test
+    void companionActivityRespectsPairingLocationConsentAndAccountDeletion() throws Exception {
+        Client alice = new Client();
+        Client bob = new Client();
+        Client outsider = new Client();
+        alice.signIn("Alice");
+        bob.signIn("Bob");
+        outsider.signIn("Outsider");
+        outsider.mutate("POST", "/sos", "", 409);
+        String invite = alice.mutate("POST", "/invite", "", 200).path("code").asText();
+        bob.mutate("POST", "/pair", Map.of("code", invite), 204);
+        alice.mutate("POST", "/messages", Map.of("text", "到家告诉我"), 204);
+        alice.mutate("POST", "/reminders", "", 204);
+        alice.mutate("POST", "/sos", "", 204);
+        assertThat(outsider.feed().path("events").size()).isZero();
+        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("SOS");
+        assertThat(bob.feed().at("/events/2/text").asText()).isEqualTo("到家告诉我");
+
+        alice.mutate("POST", "/places", Map.of("name", "家", "latitude", 34.76, "longitude", 113.65, "radius", 250), 201);
+        alice.mutate("PUT", "/usage-sharing", Map.of("enabled", true), 204);
+        String key = alice.mutate("PUT", "/sharing", Map.of("enabled", true), 200).path("shareKey").asText();
+        long time = System.currentTimeMillis();
+        alice.mutate("POST", "/positions", sample(key, 34.77, time - 2000), 204);
+        var arrival = new java.util.HashMap<>(sample(key, 34.76, time - 1000));
+        arrival.put("screenDate", "2026-11-21");
+        arrival.put("screenMinutes", 73);
+        alice.mutate("POST", "/positions", arrival, 204);
+        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("ARRIVE");
+        assertThat(bob.overview().at("/partner/screenMinutes").asInt()).isEqualTo(73);
+        alice.mutate("POST", "/positions", sample(key, 34.77, time), 204);
+        assertThat(bob.feed().at("/events/0/kind").asText()).isEqualTo("LEAVE");
+        alice.mutate("PUT", "/usage-sharing", Map.of("enabled", false), 204);
+        assertThat(bob.overview().at("/partner/screenMinutes").isNull()).isTrue();
+        alice.mutate("DELETE", "/account", Map.of("password", "wrong-password"), 403);
+        alice.mutate("DELETE", "/account", Map.of("password", PASSWORD), 204);
+        assertThat(bob.overview().path("partner").isNull()).isTrue();
+        assertThat(bob.feed().path("events").size()).isZero();
+        assertThat(alice.get("/overview").statusCode()).isEqualTo(401);
+    }
+
     private Map<String, Object> sample(String shareKey, double latitude, long time) {
         return Map.of("id", UUID.randomUUID().toString(), "shareKey", shareKey,
                 "latitude", latitude, "longitude", 113.65, "accuracy", 8,
@@ -136,6 +176,10 @@ class SharingIntegrationTest {
                     ? text : json.writeValueAsString(body), "application/json", token());
             assertThat(response.statusCode()).as("%s %s %s", method, path, response.body()).isEqualTo(status);
             return json.readTree(response.body());
+        }
+
+        JsonNode feed() throws Exception {
+            return json.readTree(get("/feed").body());
         }
 
         JsonNode overview() throws Exception {

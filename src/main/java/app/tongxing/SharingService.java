@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -31,17 +32,19 @@ class SharingService {
     private final InvitationMapper invitations;
     private final PositionSampleMapper samples;
     private final WriteGuard guard;
+    private final JdbcTemplate jdbc;
     private final PasswordEncoder passwords;
     private final byte[] enrollmentKey;
     private final SecureRandom random = new SecureRandom();
 
     SharingService(MemberMapper members, InvitationMapper invitations, PositionSampleMapper samples, WriteGuard guard,
-                   PasswordEncoder passwords, @Value("${tongxing.enrollment-key}") String enrollmentKey) {
+                   PasswordEncoder passwords, JdbcTemplate jdbc, @Value("${tongxing.enrollment-key}") String enrollmentKey) {
         this.members = members;
         this.invitations = invitations;
         this.samples = samples;
         this.guard = guard;
         this.passwords = passwords;
+        this.jdbc = jdbc;
         this.enrollmentKey = enrollmentKey.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -108,6 +111,7 @@ class SharingService {
         if (partner != null) setPair(partner, null);
         setPair(self, null);
         samples.delete(new QueryWrapper<PositionSample>().eq("pair_id", self.pairId));
+        jdbc.update("DELETE FROM companion_event WHERE pair_id = ?", self.pairId);
     }
 
     @Transactional
@@ -118,6 +122,7 @@ class SharingService {
         String shareKey = enabled ? id() : null;
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
                 .set("sharing", enabled).set("share_key", shareKey));
+        jdbc.update("UPDATE shared_place SET inside = NULL WHERE member_id = ?", self.id);
         return new ShareState(shareKey);
     }
 
@@ -144,6 +149,15 @@ class SharingService {
         sample.charging = reading.charging();
         sample.recordedAt = reading.recordedAt();
         samples.insert(sample);
+        if (self.usageEnabled && reading.screenMinutes() != null && reading.screenDate() != null) {
+            jdbc.update("""
+                    UPDATE member SET screen_minutes = ?, screen_date = ?
+                    WHERE id = ? AND (screen_date IS NULL OR screen_date < ?
+                    OR (screen_date = ? AND screen_minutes <= ?))
+                    """, reading.screenMinutes(), reading.screenDate(), self.id,
+                    reading.screenDate(), reading.screenDate(), reading.screenMinutes());
+        }
+        if (now - sample.recordedAt <= Duration.ofMinutes(3).toMillis()) observePlaces(self, sample);
     }
 
     @Transactional
@@ -179,6 +193,8 @@ class SharingService {
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
                 .set("sharing", false).set("share_key", null));
         samples.delete(new QueryWrapper<PositionSample>().eq("member_id", self.id));
+        jdbc.update("DELETE FROM companion_event WHERE sender_id = ? AND kind IN ('ARRIVE', 'LEAVE')", self.id);
+        jdbc.update("UPDATE shared_place SET inside = NULL, observed_at = NULL WHERE member_id = ?", self.id);
     }
 
     @Scheduled(fixedDelay = 3_600_000)
@@ -188,13 +204,147 @@ class SharingService {
         long now = System.currentTimeMillis();
         samples.delete(new QueryWrapper<PositionSample>().lt("recorded_at", now - RETENTION));
         invitations.delete(new QueryWrapper<Invitation>().le("expires_at", now));
+        jdbc.update("DELETE FROM companion_event WHERE created_at < ?", now - RETENTION);
+        jdbc.update("DELETE FROM push_device WHERE refreshed_at < ?", now - RETENTION);
+    }
+
+    @Transactional
+    public Feed feed(String username, Long before) {
+        guard.lock();
+        Member self = current(username);
+        if (self.pairId == null) return new Feed(null, List.of());
+        List<Event> events = jdbc.query("""
+                SELECT e.id, e.kind, e.body, m.display_name, e.sender_id, e.created_at
+                FROM companion_event e JOIN member m ON e.sender_id = m.id
+                WHERE e.pair_id = ? AND e.id < ? AND e.created_at >= ?
+                ORDER BY e.id DESC LIMIT 80
+                """, (row, i) -> new Event(row.getLong("id"), row.getString("kind"), row.getString("body"),
+                row.getString("display_name"), !self.id.equals(row.getString("sender_id")), row.getLong("created_at")),
+                self.pairId, before == null ? Long.MAX_VALUE : before, System.currentTimeMillis() - RETENTION);
+        return new Feed(self.pairId, events);
+    }
+
+    @Transactional
+    public void interact(String username, String kind, String body) {
+        guard.lock();
+        Member self = current(username);
+        if (self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        long now = System.currentTimeMillis();
+        long window = kind.equals("MESSAGE") ? 1000 : 15_000;
+        Integer count = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM companion_event WHERE pair_id = ? AND sender_id = ?
+                AND kind = ? AND created_at >= ?
+                """, Integer.class, self.pairId, self.id, kind, now - window);
+        if (count != null && count > 0) throw failure(HttpStatus.TOO_MANY_REQUESTS, "发送太频繁，请稍后再试");
+        addEvent(self, kind, body.strip(), now);
+    }
+
+    private void addEvent(Member self, String kind, String body, long time) {
+        jdbc.update("INSERT INTO companion_event(pair_id, sender_id, kind, body, created_at) VALUES (?, ?, ?, ?, ?)",
+                self.pairId, self.id, kind, body, time);
+    }
+
+    @Transactional
+    public List<Place> places(String username) {
+        guard.lock();
+        return ownPlaces(current(username).id);
+    }
+
+    private List<Place> ownPlaces(String memberId) {
+        return jdbc.query("""
+                SELECT id, name, latitude, longitude, radius, inside, observed_at
+                FROM shared_place WHERE member_id = ? ORDER BY name, id
+                """, (row, i) -> new Place(row.getString("id"), row.getString("name"),
+                row.getDouble("latitude"), row.getDouble("longitude"), row.getInt("radius"),
+                row.getObject("inside", Boolean.class), row.getObject("observed_at", Long.class)), memberId);
+    }
+
+    @Transactional
+    public void addPlace(String username, PlaceInput place) {
+        guard.lock();
+        Member self = current(username);
+        if (ownPlaces(self.id).size() >= 12) throw failure(HttpStatus.CONFLICT, "最多可保存 12 个地点");
+        jdbc.update("INSERT INTO shared_place(id, member_id, name, latitude, longitude, radius) VALUES (?, ?, ?, ?, ?, ?)",
+                id(), self.id, place.name().strip(), place.latitude(), place.longitude(), place.radius());
+    }
+
+    @Transactional
+    public void removePlace(String username, UUID id) {
+        guard.lock();
+        jdbc.update("DELETE FROM shared_place WHERE id = ? AND member_id = ?", id.toString(), current(username).id);
+    }
+
+    private void observePlaces(Member self, PositionSample sample) {
+        for (Place place : ownPlaces(self.id)) {
+            if (sample.accuracy > place.radius() / 2.0
+                    || (place.observedAt() != null && sample.recordedAt <= place.observedAt())) continue;
+            double distance = distanceMeters(place.latitude(), place.longitude(), sample.latitude, sample.longitude);
+            double margin = Math.max(25, sample.accuracy);
+            if (Math.abs(distance - place.radius()) <= margin) continue;
+            boolean inside = distance < place.radius();
+            jdbc.update("UPDATE shared_place SET inside = ?, observed_at = ? WHERE id = ?", inside,
+                    sample.recordedAt, place.id());
+            if (place.inside() != null && inside != place.inside()) {
+                addEvent(self, inside ? "ARRIVE" : "LEAVE", place.name(), sample.recordedAt);
+            }
+        }
+    }
+
+    private static double distanceMeters(double firstLat, double firstLon, double lat, double lon) {
+        double a = Math.pow(Math.sin(Math.toRadians(lat - firstLat) / 2), 2)
+                + Math.cos(Math.toRadians(firstLat)) * Math.cos(Math.toRadians(lat))
+                * Math.pow(Math.sin(Math.toRadians(lon - firstLon) / 2), 2);
+        return 12_742_000 * Math.asin(Math.sqrt(Math.min(1, a)));
+    }
+
+    @Transactional
+    public void usageSharing(String username, boolean enabled) {
+        guard.lock();
+        Member self = current(username);
+        if (enabled && self.pairId == null) throw failure(HttpStatus.CONFLICT, "请先完成绑定");
+        jdbc.update("UPDATE member SET usage_enabled = ?, screen_minutes = NULL, screen_date = NULL WHERE id = ?",
+                enabled, self.id);
+    }
+
+    @Transactional
+    public void pushToken(String username, String token, boolean enabled) {
+        guard.lock();
+        Member self = current(username);
+        if (!enabled) {
+            jdbc.update("DELETE FROM push_device WHERE token = ? AND member_id = ?", token, self.id);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        int updated = jdbc.update("UPDATE push_device SET refreshed_at = ? WHERE token = ? AND member_id = ?",
+                now, token, self.id);
+        if (updated != 0) return;
+        Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM push_device WHERE member_id = ?", Integer.class, self.id);
+        if (count != null && count >= 5) throw failure(HttpStatus.CONFLICT, "已达到设备数量上限");
+        jdbc.update("DELETE FROM push_device WHERE token = ?", token);
+        long watermark = jdbc.queryForObject("SELECT COALESCE(MAX(id), 0) FROM companion_event", Long.class);
+        jdbc.update("INSERT INTO push_device(token, member_id, delivered_through, refreshed_at) VALUES (?, ?, ?, ?)",
+                token, self.id, watermark, now);
+    }
+
+    @Transactional
+    public void deleteAccount(String username, String password) {
+        Member member = current(username);
+        if (!passwords.matches(password, member.passwordHash)) throw failure(HttpStatus.FORBIDDEN, "密码不正确");
+        unpair(username);
+        jdbc.update("DELETE FROM companion_event WHERE sender_id = ?", member.id);
+        jdbc.update("DELETE FROM shared_place WHERE member_id = ?", member.id);
+        samples.delete(new QueryWrapper<PositionSample>().eq("member_id", member.id));
+        jdbc.update("DELETE FROM push_device WHERE member_id = ?", member.id);
+        members.deleteById(member.id);
     }
 
     private Status status(Member member, long now) {
-        if (!member.sharing || member.pairId == null) return new Status(member.displayName, false, null);
+        if (!member.sharing || member.pairId == null) return new Status(member.displayName, false, null, null, null, member.usageEnabled);
         List<PositionSample> latest = samples.selectList(query(member).ge("recorded_at", now - RETENTION)
                 .orderByDesc("recorded_at", "id").last("LIMIT 1"));
-        return new Status(member.displayName, true, latest.isEmpty() ? null : point(latest.getFirst()));
+        return new Status(member.displayName, true, latest.isEmpty() ? null : point(latest.getFirst()),
+                member.usageEnabled ? member.screenMinutes : null,
+                member.usageEnabled ? member.screenDate : null, member.usageEnabled);
     }
 
     private QueryWrapper<PositionSample> query(Member member) {
@@ -203,7 +353,9 @@ class SharingService {
 
     private void setPair(Member member, String pairId) {
         members.update(null, new UpdateWrapper<Member>().eq("id", member.id).set("pair_id", pairId)
-                .set("sharing", false).set("share_key", null));
+                .set("sharing", false).set("share_key", null)
+                .set("usage_enabled", false).set("screen_minutes", null).set("screen_date", null));
+        jdbc.update("UPDATE shared_place SET inside = NULL, observed_at = NULL WHERE member_id = ?", member.id);
     }
 
     private Member findMember(String username) {
