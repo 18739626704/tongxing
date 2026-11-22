@@ -10,7 +10,7 @@
 <body>
   <header class="top">
     <div><span class="brand">同行</span><span class="separator"></span><span>管理控制台</span></div>
-    <div id="identity" hidden><span id="administrator"></span><button id="logout" type="button">退出</button></div>
+    <div id="identity" hidden><span id="administrator"></span><button id="change-password" type="button" hidden>修改密码</button><button id="logout" type="button">退出</button></div>
   </header>
   <main>
     <p id="notice" class="notice" role="status" hidden></p>
@@ -19,7 +19,18 @@
       <form id="login">
         <label>管理员账号<input name="username" autocomplete="username" maxlength="128" required></label>
         <label>管理员密码<input name="password" type="password" autocomplete="current-password" required></label>
+        <label id="setup-code" hidden>首次设置码<input name="setupCode" type="password" autocomplete="off"></label>
         <button class="primary">登录</button>
+      </form>
+    </section>
+    <section class="panel signin" id="password-panel" hidden>
+      <h2>修改管理员密码</h2>
+      <p>新密码请使用 10–64 个字符。改密后请重新登录。</p>
+      <form id="password-form">
+        <label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <label>新密码<input name="newPassword" type="password" autocomplete="new-password" required minlength="10" maxlength="64"></label>
+        <label>确认新密码<input name="confirmation" type="password" autocomplete="new-password" required maxlength="64"></label>
+        <button class="primary">保存密码</button>
       </form>
     </section>
     <div id="console" hidden>

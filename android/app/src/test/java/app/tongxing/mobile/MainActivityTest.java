@@ -100,6 +100,38 @@ public class MainActivityTest {
     }
 
     @Test
+    public void walkingWakesDenseReportingWithoutTheStepSensor() {
+        LocationCadence cadence = new LocationCadence();
+        Location first = new Location(LocationManager.GPS_PROVIDER);
+        first.setAccuracy(8);
+        cadence.fix(first, 1_000);
+        assertEquals(LocationCadence.STATIONARY_INTERVAL, cadence.interval(1_000));
+
+        Location walking = new Location(first);
+        walking.setLatitude(.00019);
+        cadence.fix(walking, 16_000);
+        assertEquals(LocationCadence.MOVING_INTERVAL, cadence.interval(16_000));
+        assertEquals(LocationCadence.STATIONARY_INTERVAL, cadence.interval(137_000));
+    }
+
+    @Test
+    public void offlineSamplesSurviveReopeningAndAreScopedToTheSharingSession() {
+        var app = RuntimeEnvironment.getApplication();
+        String account = "https://share.example.com#alice";
+        JSONObject sample = Api.json("id", "one", "recordedAt", System.currentTimeMillis());
+        try (var queue = new PendingPositions(app)) {
+            queue.prepare(account, "generation-a");
+            queue.add(account, "generation-a", sample);
+        }
+        try (var queue = new PendingPositions(app)) {
+            assertNull(queue.next(account, "generation-b"));
+            assertEquals("one", queue.next(account, "generation-a").optString("id"));
+            queue.prepare(account, "generation-b");
+            assertNull(queue.next(account, "generation-a"));
+        }
+    }
+
+    @Test
     public void scannerAcceptsOnlyValidTongxingPairCodes() {
         assertEquals("0123456789ABCDEF", PairQr.scan("tongxing:pair:0123456789abcdef"));
         assertEquals("0123456789ABCDEF", PairQr.code(" 0123456789abcdef "));

@@ -19,7 +19,8 @@ final class RouteTimeline {
     record Summary(List<Part> activities, List<Part> missing, long moving, long stopped, long uncovered) {}
     static final double AREA_RADIUS_METERS = 90;
     static final long MAX_MOVING_GAP = 180_000;
-    private static final long MAX_QUIET_GAP = LocationCadence.QUIET + 60_000;
+    // Historical tracks were collected at intervals of up to 150 seconds when stationary.
+    private static final long MAX_QUIET_GAP = 210_000;
 
     private RouteTimeline() {}
 

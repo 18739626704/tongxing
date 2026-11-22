@@ -1,3 +1,4 @@
 <full-backup-content>
     <exclude domain="sharedpref" path="."/>
+    <exclude domain="database" path="pending-positions.db"/>
 </full-backup-content>

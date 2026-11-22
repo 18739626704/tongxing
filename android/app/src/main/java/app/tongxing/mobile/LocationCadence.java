@@ -3,45 +3,37 @@ package app.tongxing.mobile;
 import android.location.Location;
 
 final class LocationCadence {
-    static final long ACTIVE = 60_000;
-    static final long MOVING = 25_000;
-    static final long QUIET = 150_000;
-    private static final long MOTION_WINDOW = 180_000;
+    static final long PROVIDER_INTERVAL = 15_000;
+    static final long MOVING_INTERVAL = 12_000;
+    static final long STATIONARY_INTERVAL = 60_000;
+    private static final long MOVEMENT_WINDOW = 120_000;
     private Location anchor;
-    private long motionUntil;
-    private long quietSince;
-    private int quietFixes;
+    private long movingUntil;
 
     void step(long now) {
-        motionUntil = now + MOTION_WINDOW;
-        quietSince = 0;
-        quietFixes = 0;
+        movingUntil = now + MOVEMENT_WINDOW;
     }
 
     void fix(Location point, long now) {
-        if (point.getAccuracy() > 55) return;
+        if (point.getAccuracy() > 60) return;
         if (anchor == null) anchor = point;
-        double change = anchor.distanceTo(point);
         boolean speed = point.hasSpeed() && point.hasSpeedAccuracy()
-                && point.getSpeed() - point.getSpeedAccuracyMetersPerSecond() >= 1.5;
-        if (speed || change > Math.max(55, anchor.getAccuracy() + point.getAccuracy())) {
+                && point.getSpeed() - point.getSpeedAccuracyMetersPerSecond() >= 0.6;
+        double displacement = anchor.distanceTo(point);
+        if (speed || displacement >= Math.max(18, (anchor.getAccuracy() + point.getAccuracy()) * 0.65)) {
             anchor = point;
             step(now);
-        } else {
-            if (quietSince == 0) quietSince = now;
-            quietFixes++;
+        } else if (displacement < 10 && point.getAccuracy() < anchor.getAccuracy()) {
+            anchor = point;
         }
     }
 
     long interval(long now) {
-        if (now < motionUntil) return MOVING;
-        return quietFixes < 3 || now - quietSince < 120_000 ? ACTIVE : QUIET;
+        return anchor == null || now < movingUntil ? MOVING_INTERVAL : STATIONARY_INTERVAL;
     }
 
     void reset() {
         anchor = null;
-        motionUntil = 0;
-        quietSince = 0;
-        quietFixes = 0;
+        movingUntil = 0;
     }
 }
