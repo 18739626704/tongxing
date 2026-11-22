@@ -19,7 +19,12 @@ class AdminController {
     record Account(String id, String username, String displayName, boolean disabled,
                    boolean paired, boolean sharing) {}
     record Accounts(List<Account> accounts, String next) {}
-    record Detail(Account account, long serverTime, SharingController.Status status, SharingController.AppUsageSnapshot apps) {}
+    static final int ACCOUNT_PAGE_SIZE = 20;
+    record Partner(String id, String username, String displayName) {}
+    record Detail(Account account, long serverTime, SharingController.Status status,
+                  SharingController.AppUsageSnapshot apps, Partner partner) {}
+    record ConversationMessage(long id, String username, String displayName, boolean outgoing, String text, long createdAt) {}
+    record Conversation(Partner partner, List<ConversationMessage> messages, Long before) {}
     record Activity(long id, String kind, String text, long createdAt, Long receivedAt, Long viewedAt) {}
     record Activities(List<Activity> items, Long before) {}
     record SavedLocation(String name, double latitude, double longitude, boolean watching) {}
@@ -66,8 +71,8 @@ class AdminController {
     Accounts accounts(@RequestParam(defaultValue = "") @Size(max = 32) String search,
                       @RequestParam(defaultValue = "") @Size(max = 32) String after) {
         List<Account> found = sharing.adminAccounts(search.strip(), after);
-        return found.size() <= 50 ? new Accounts(found, null)
-                : new Accounts(found.subList(0, 50), found.get(49).username());
+        return found.size() <= ACCOUNT_PAGE_SIZE ? new Accounts(found, null)
+                : new Accounts(found.subList(0, ACCOUNT_PAGE_SIZE), found.get(ACCOUNT_PAGE_SIZE - 1).username());
     }
 
     @GetMapping("/api/accounts/{id}")
@@ -93,6 +98,12 @@ class AdminController {
         List<Activity> items = sharing.adminActivity(id.toString(), before);
         return items.size() <= 50 ? new Activities(items, null)
                 : new Activities(items.subList(0, 50), items.get(49).id());
+    }
+
+    @GetMapping("/api/accounts/{id}/conversation")
+    @ResponseBody
+    Conversation conversation(@PathVariable UUID id, @RequestParam(required = false) Long before) {
+        return sharing.adminConversation(id.toString(), before);
     }
 
     @GetMapping("/api/accounts/{id}/places")

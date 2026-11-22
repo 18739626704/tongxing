@@ -8,6 +8,12 @@
 mvn --batch-mode verify
 ```
 
+管理台时间轴的漂移过滤和分段可以在仓库根目录用 Node.js 运行回归测试。
+
+```bash
+node --test src/test/js/admin-route-timeline.test.cjs
+```
+
 安卓需要 JDK 21、Android SDK Platform 35 和可用的 Android SDK 工具。首次运行 Gradle Wrapper 时需要网络访问 Maven Central、Google Maven 和 Gradle 分发站点。
 
 ```bash

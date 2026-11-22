@@ -42,7 +42,7 @@ class Security {
         http.securityMatcher("/admin", "/admin/**").authenticationManager(new ProviderManager(provider))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/admin", "/admin/", "/admin/index.html", "/admin/admin.css",
-                                "/admin/admin.js", "/admin/route-map.js", "/admin/vendor/leaflet.css",
+                                "/admin/admin.js", "/admin/route-map.js", "/admin/route-timeline.js", "/admin/vendor/leaflet.css",
                                 "/admin/vendor/leaflet.js", "/admin/csrf", "/admin/login").permitAll()
                         .anyRequest().hasRole("ADMIN"))
                 .addFilterBefore(new AdminSessionCheck(admin), LogoutFilter.class)

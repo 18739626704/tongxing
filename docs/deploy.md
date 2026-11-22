@@ -47,7 +47,7 @@ curl -fsS https://share.example.com/api/health
 | `REGISTRATION_ENABLED` | 可选，默认允许注册 |
 | 地图、推送与管理员 | 参照上表的可选变量 |
 
-已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.8.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
+已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.9.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
 
 ## 手机注册
 
@@ -83,3 +83,7 @@ curl -fsS https://share.example.com/api/health
 在 Firebase 控制台创建项目并注册 Android 应用 `app.tongxing.mobile`。下载 Android 应用的 `google-services.json` 用于[客户端构建](development.md#可选构建)。为同一个 Firebase 项目创建有发送 FCM 消息权限的服务账号，生成凭据并将完整 JSON 以单行写入服务器上的 `FCM_SERVICE_ACCOUNT_JSON`。请通过部署平台的私有变量界面配置生产凭据。不要上传 JSON 或在日志中打印它。
 
 管理端足迹使用 OpenStreetMap 街道底图，无需地图 Key。底图由浏览器加载，瓦片不可用时仍可查看足迹和采样坐标。Android SDK Key 和 Web 服务 Key 按前述各自用途配置。
+
+管理台的「用户管理」可用登录名或显示名称的任意片段搜索，每页 20 个账号。用户详情的「足迹」按北京时间选日期，时间轴区分移动、停留、定位中断和未能判定的时段。点击移动或停留记录可以在地图上定位，也可以展开原始采样坐标。
+
+「概览」显示当前绑定对象的显示名称和登录名。「对话」分页查看当前绑定双方仍在保留期内的文字消息。管理端查看对话会写入操作日志。解绑和历史清理遵循现有的数据删除规则。

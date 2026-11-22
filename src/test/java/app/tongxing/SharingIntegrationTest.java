@@ -91,6 +91,18 @@ class SharingIntegrationTest {
         String target = "/api/accounts/" + json.readTree(accounts.body()).at("/accounts/0/id").asText();
         String route = target + "/positions?from=" + (now - 1000) + "&to=" + (now + 1000);
         member.mutate("POST", "/messages", Map.of("text", "模拟动态"), 204);
+        partner.mutate("POST", "/messages", Map.of("text", "模拟回复"), 204);
+        var conversation = target + "/conversation";
+        assertThat(member.admin("GET", conversation, "", null).statusCode()).isEqualTo(403);
+        var thread = json.readTree(operator.admin("GET", conversation, "", null).body());
+        assertThat(thread.at("/partner/displayName").asText()).isEqualTo("AdminPartner");
+        assertThat(thread.at("/messages/0/text").asText()).isEqualTo("模拟回复");
+        assertThat(thread.at("/messages/0/outgoing").asBoolean()).isFalse();
+        assertThat(thread.at("/messages/1/text").asText()).isEqualTo("模拟动态");
+        assertThat(thread.at("/messages/1/outgoing").asBoolean()).isTrue();
+        assertThat(json.readTree(operator.admin("GET", conversation + "?before="
+                + thread.at("/messages/0/id").asLong(), "", null).body()).path("messages").size()).isEqualTo(1);
+        assertThat(operator.admin("GET", "/api/accounts?search=MIN_TAR", "", null).body()).contains(username);
         member.mutate("POST", "/saved-places", Map.of("name", "模拟地点", "point", Map.of("latitude", 10.25, "longitude", 20.5)), 200);
         assertThat(json.readTree(operator.admin("GET", target, "", null).body())
                 .at("/status/lastLocation/latitude").asDouble()).isEqualTo(10.25);
@@ -114,7 +126,7 @@ class SharingIntegrationTest {
         otherSession.login(username);
         assertThat(otherSession.overview().at("/self/sharing").asBoolean()).isFalse();
         assertThat(operator.admin("GET", "/api/audit", "", null).body())
-                .contains("VIEW_ROUTE", "DISABLE_ACCOUNT", "ENABLE_ACCOUNT");
+                .contains("VIEW_ROUTE", "VIEW_CONVERSATION", "DISABLE_ACCOUNT", "ENABLE_ACCOUNT");
         String auditFilter = "/api/audit?username=" + username;
         var filteredAudit = operator.admin("GET", auditFilter + "&from=" + now + "&to=" + (now + 60_000), "", null);
         assertThat(filteredAudit.statusCode()).isEqualTo(200);
@@ -126,6 +138,25 @@ class SharingIntegrationTest {
         var leaflet = operator.admin("GET", "/vendor/leaflet.js", "", null);
         assertThat(leaflet.statusCode()).isEqualTo(200);
         assertThat(leaflet.body()).contains("Leaflet");
+    }
+
+    @Test
+    void accountSearchUsesLiteralSubstringsAndPagesFilteredResults() throws Exception {
+        for (int i = 0; i <= 20; i++) {
+            new Client().mutate("POST", "/register", Map.of("username", "page002_" + String.format("%02d", i),
+                    "password", PASSWORD), 201);
+        }
+        new Client().mutate("POST", "/register", Map.of("username", "page002x99", "password", PASSWORD), 201);
+        var operator = new Client();
+        assertThat(operator.admin("POST", "/login", "username=test_operator&password=" + PASSWORD,
+                operator.adminToken()).statusCode()).isEqualTo(204);
+        String path = "/api/accounts?search=002_";
+        var first = json.readTree(operator.admin("GET", path, "", null).body());
+        assertThat(first.path("accounts").size()).isEqualTo(20);
+        var second = json.readTree(operator.admin("GET", path + "&after=" + first.path("next").asText(), "", null).body());
+        assertThat(second.path("accounts").size()).isEqualTo(1);
+        assertThat(second.at("/accounts/0/username").asText()).isEqualTo("page002_20");
+        assertThat(second.path("next").isNull()).isTrue();
     }
 
     @Test

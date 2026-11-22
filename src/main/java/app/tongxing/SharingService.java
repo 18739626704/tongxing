@@ -2,6 +2,7 @@ package app.tongxing;
 
 import app.tongxing.SharingController.*;
 import app.tongxing.AdminController.*;
+import static app.tongxing.AdminController.ACCOUNT_PAGE_SIZE;
 import app.tongxing.store.*;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -225,10 +226,13 @@ class SharingService {
         QueryWrapper<Member> query = new QueryWrapper<Member>()
                 .select("id", "username", "display_name", "pair_id", "disabled", "sharing");
         if (!search.isBlank()) {
-            query.and(columns -> columns.like("username", search).or().like("display_name", search));
+            String literal = search.toLowerCase(Locale.ROOT)
+                    .replace("!", "!!").replace("%", "!%").replace("_", "!_");
+            query.apply("(LOWER(username) LIKE {0} ESCAPE '!' OR LOWER(display_name) LIKE {0} ESCAPE '!')",
+                    "%" + literal + "%");
         }
         if (!after.isEmpty()) query.gt("username", after);
-        return members.selectList(query.orderByAsc("username").last("LIMIT 51")).stream()
+        return members.selectList(query.orderByAsc("username").last("LIMIT " + (ACCOUNT_PAGE_SIZE + 1))).stream()
                 .map(SharingService::account).toList();
     }
 
@@ -238,7 +242,7 @@ class SharingService {
         Member target = adminTarget(id);
         long now = System.currentTimeMillis();
         audit("VIEW_STATUS", id);
-        return new Detail(account(target), now, status(target, now, true), appUsageSnapshot(target));
+        return new Detail(account(target), now, status(target, now, true), appUsageSnapshot(target), adminPartner(partnerOf(target)));
     }
 
     @Transactional
@@ -261,6 +265,31 @@ class SharingService {
                 """, (row, index) -> new Activity(row.getLong("id"), row.getString("kind"), row.getString("body"),
                 row.getLong("created_at"), row.getObject("received_at", Long.class), row.getObject("viewed_at", Long.class)),
                 id, System.currentTimeMillis() - RETENTION, before == null ? Long.MAX_VALUE : before);
+    }
+
+    @Transactional
+    public Conversation adminConversation(String id, Long before) {
+        guard.lock();
+        Member target = adminTarget(id);
+        Member partner = partnerOf(target);
+        if (partner == null) return new Conversation(null, List.of(), null);
+        audit("VIEW_CONVERSATION", id);
+        List<ConversationMessage> messages = jdbc.query("""
+                SELECT e.id, m.username, m.display_name, e.sender_id, e.body, e.created_at
+                FROM companion_event e JOIN member m ON m.id = e.sender_id
+                WHERE e.pair_id = ? AND e.sender_id IN (?, ?) AND e.kind = 'MESSAGE'
+                    AND e.created_at >= ? AND e.id < ? ORDER BY e.id DESC LIMIT 51
+                """, (row, index) -> new ConversationMessage(row.getLong("id"), row.getString("username"),
+                row.getString("display_name"), id.equals(row.getString("sender_id")),
+                row.getString("body"), row.getLong("created_at")),
+                target.pairId, id, partner.id, System.currentTimeMillis() - RETENTION,
+                before == null ? Long.MAX_VALUE : before);
+        return messages.size() <= 50 ? new Conversation(adminPartner(partner), messages, null)
+                : new Conversation(adminPartner(partner), messages.subList(0, 50), messages.get(49).id());
+    }
+
+    private static Partner adminPartner(Member member) {
+        return member == null ? null : new Partner(member.id, member.username, member.displayName);
     }
 
     @Transactional

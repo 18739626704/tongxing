@@ -178,3 +178,15 @@ tbody tr:last-child td { border-bottom: 0; }
   .audit-form button { flex: 1; min-height: 44px; }
   .audit td:first-child { font-size: 12px; max-width: 100px; }
 }
+
+.detail-tabs { overflow-x: auto; }
+.timeline-items, .conversation-items { list-style: none; padding: 0; margin: 0; display: grid; gap: 7px; }
+.timeline-row { display: flex; align-items: center; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; width: 100%; text-align: left; border-radius: 9px; padding: 9px 11px; white-space: normal; }
+.timeline-row span { color: var(--muted); font-size: 13px; font-weight: 400; }
+.timeline-row.stopped { background: var(--wash); }
+.timeline-row.gap, .timeline-row.uncertain { background: var(--canvas); color: var(--muted); }
+.conversation-items { margin-top: 12px; }
+.conversation-items li { width: fit-content; max-width: min(85%, 560px); padding: 8px 12px; border-radius: 10px; background: var(--canvas); overflow-wrap: anywhere; }
+.conversation-items li.outgoing { justify-self: end; background: var(--wash); }
+.conversation-items small { color: var(--muted); }
+.conversation-items p { color: var(--ink); white-space: pre-wrap; }

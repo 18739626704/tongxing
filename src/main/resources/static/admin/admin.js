@@ -15,7 +15,7 @@ const dateRange = value => {
 };
 const labels = {
     VIEW_STATUS: '查看位置与共享状态', VIEW_ROUTE: '查看足迹',
-    VIEW_ACTIVITY: '查看动态', VIEW_PLACES: '查看常去地点', DISABLE_ACCOUNT: '禁用账号', ENABLE_ACCOUNT: '恢复账号',
+    VIEW_CONVERSATION: '查看绑定对话', VIEW_ACTIVITY: '查看动态', VIEW_PLACES: '查看常去地点', DISABLE_ACCOUNT: '禁用账号', ENABLE_ACCOUNT: '恢复账号',
     WIFI: 'Wi-Fi', MOBILE: '移动网络', ETHERNET: '以太网', VPN: 'VPN', OTHER: '其他', OFFLINE: '离线',
     FAST: '快速移动', MOVING: '移动', STILL: '静止', STOPPED: '停留', TRAVELLING: '移动中',
     OFF: '熄屏', LOCKED: '锁屏', UNLOCKED: '已解锁'
@@ -35,7 +35,11 @@ let routeVersion = 0;
 let loadedRouteDate;
 let recordsVersion = 0;
 let activityBefore;
+let conversationVersion = 0;
+let conversationBefore;
+let conversationPartner;
 let points = [];
+let processed = {fixes: [], parts: []};
 let pointPage = 0;
 const pointPageSize = 100;
 
@@ -119,10 +123,9 @@ function showDetailTab(next, load = true) {
     }
     if (next === 'route' && load) {
         if (loadedRouteDate !== byId('route-date').value) loadRoute();
-        else if (points.length && byId('route-map-card').hidden && byId('route').hidden) {
-            if (!adminRouteMap.show(points, at => routeTime.format(at))) drawRoute();
-        } else adminRouteMap.fit();
+        else if (processed.fixes.length && byId('route-map-card').hidden && byId('route').hidden) showRouteMap(); else adminRouteMap.fit();
     }
+    if (next === 'conversation' && load) loadConversation(false);
     if (next === 'records' && load && !recordsLoaded) loadRecords(false);
 }
 
@@ -219,6 +222,9 @@ function displayTime(at) { return at > 0 ? latest.format(at) : '—'; }
 function clearRoute(message = '') {
     routeVersion++;
     points = [];
+    processed = {fixes: [], parts: []};
+    byId('timeline').hidden = true;
+    byId('timeline-items').replaceChildren();
     pointPage = 0;
     byId('route-status').textContent = message;
     loadedRouteDate = null;
@@ -241,6 +247,8 @@ function clearLocation(message = '') {
     byId('usage').hidden = true;
     byId('route-form').hidden = true;
     recordsVersion++;
+    conversationVersion++;
+    resetConversation();
     activityBefore = null;
     recordsLoaded = false;
     showDetailTab('overview', false);
@@ -291,7 +299,7 @@ async function loadDetail(focus = false) {
 }
 
 function renderDetail(detail) {
-    const {account, status} = detail;
+    const {account, status, partner} = detail;
     byId('selection-status').textContent = '';
     byId('details').hidden = false;
     byId('person-name').textContent = account.username;
@@ -301,7 +309,7 @@ function renderDetail(detail) {
     state.classList.toggle('disabled', account.disabled);
     state.textContent = account.disabled ? '已禁用' : '正常';
     facts(byId('profile'), [
-        ['伴侣绑定', account.paired ? '已绑定' : '未绑定'],
+        ['伴侣绑定', partner ? accountLabel(partner) : '未绑定'],
         ['位置共享', !account.paired ? '未绑定' : account.sharing ? '共享中' : '已暂停']
     ]);
     const accountAction = byId('set-account-state');
@@ -337,6 +345,64 @@ function renderDetail(detail) {
     }
     byId('usage').hidden = !apps.childElementCount;
     byId('route-form').hidden = false;
+}
+
+function accountLabel(account) {
+    return account.displayName && account.displayName !== account.username
+        ? account.displayName + '（' + account.username + '）' : account.username;
+}
+
+function resetConversation() {
+    conversationBefore = null;
+    conversationPartner = null;
+    byId('conversation-title').textContent = '绑定对话';
+    byId('conversation-items').replaceChildren();
+    byId('more-conversation').hidden = true;
+}
+
+async function loadConversation(earlier) {
+    if (!selectedDetail || (earlier && !conversationBefore)) return;
+    const version = ++conversationVersion;
+    if (!earlier) resetConversation();
+    const button = byId('more-conversation');
+    button.disabled = true;
+    byId('conversation-status').textContent = '正在读取对话…';
+    try {
+        const path = '/api/accounts/' + selected + '/conversation';
+        const {partner, messages, before} = await request(path + (earlier ? '?before=' + conversationBefore : ''));
+        if (version !== conversationVersion || panel.hidden) return;
+        if (earlier && partner?.id !== conversationPartner) {
+            loadConversation(false);
+            return;
+        }
+        if (!partner) {
+            byId('conversation-status').textContent = '该用户当前未绑定伴侣。';
+            return;
+        }
+        conversationPartner = partner.id;
+        byId('conversation-title').textContent = '与 ' + accountLabel(partner) + ' 的对话';
+        const batch = document.createDocumentFragment();
+        for (const message of messages.slice().reverse()) {
+            const row = document.createElement('li');
+            const meta = document.createElement('small');
+            const body = document.createElement('p');
+            row.className = message.outgoing ? 'outgoing' : 'incoming';
+            meta.textContent = accountLabel(message) + ' · ' + displayTime(message.createdAt);
+            body.textContent = message.text;
+            row.append(meta, body);
+            batch.append(row);
+        }
+        byId('conversation-items').prepend(batch);
+        conversationBefore = before;
+        button.hidden = !before;
+        byId('conversation-status').textContent = messages.length || earlier ? '' : '暂无保留的文字消息。';
+    } catch (error) {
+        if (version !== conversationVersion) return;
+        byId('conversation-status').textContent = '对话读取失败，请重新打开此页。';
+        if (error.status === 401) handle(error);
+    } finally {
+        if (version === conversationVersion) button.disabled = false;
+    }
 }
 
 async function loadRecords(earlier) {
@@ -380,7 +446,12 @@ function renderRecordLines(list, lines, replace) {
     }
 }
 
+function showRouteMap() {
+    if (!adminRouteMap.show(processed.fixes, processed.parts, at => routeTime.format(at))) drawRoute();
+}
+
 function drawRoute() {
+    const points = processed.fixes;
     const canvas = byId('route');
     const context = canvas.getContext('2d');
     const center = points[0];
@@ -406,7 +477,11 @@ function drawRoute() {
     context.strokeStyle = '#27634d';
     context.lineWidth = 3;
     context.beginPath();
-    screen.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
+    for (const part of processed.parts) {
+        if (part.kind !== 'moving') continue;
+        context.moveTo(...screen[part.first]);
+        for (let index = part.first + 1; index <= part.last; index++) context.lineTo(...screen[index]);
+    }
     context.stroke();
     for (const [[x, y], color, label] of [[screen[0], '#27634d', '起点'], [screen[screen.length - 1], '#a84d2f', '末点']]) {
         context.fillStyle = color;
@@ -536,21 +611,51 @@ byId('set-account-state').addEventListener('click', async () => {
 });
 byId('load-records').addEventListener('click', () => loadRecords(false));
 byId('more-activity').addEventListener('click', () => loadRecords(true));
-function renderRouteSummary() {
-    const first = points[0];
-    const last = points.at(-1);
+byId('more-conversation').addEventListener('click', () => loadConversation(true));
+
+function duration(milliseconds) {
+    const minutes = Math.floor(milliseconds / 60_000);
+    if (!minutes && milliseconds > 0) return '不足 1 分钟';
+    return minutes < 60 ? minutes + ' 分钟' : Math.floor(minutes / 60) + ' 小时 ' + minutes % 60 + ' 分钟';
+}
+
+function renderRouteTimeline() {
+    const titles = {moving: '移动', stopped: '停留', gap: '定位中断', uncertain: '未能判定'};
+    const totals = {moving: 0, stopped: 0, gap: 0, uncertain: 0};
+    const items = byId('timeline-items');
+    for (const part of processed.parts.slice().reverse()) {
+        const elapsed = part.to - part.from;
+        totals[part.kind] += elapsed;
+        const row = document.createElement('li');
+        const active = part.kind === 'moving' || part.kind === 'stopped';
+        const element = document.createElement(active ? 'button' : 'div');
+        element.className = 'timeline-row ' + part.kind;
+        const title = document.createElement('strong');
+        const detail = document.createElement('span');
+        title.textContent = titles[part.kind] + ' · ' + duration(elapsed);
+        detail.textContent = routeTime.format(part.from) + '–' + routeTime.format(part.to)
+            + (part.kind === 'moving' ? ' · 约 ' + (part.meters < 1000 ? Math.round(part.meters) + ' 米'
+                : (part.meters / 1000).toFixed(1) + ' 公里') : '');
+        if (active) {
+            element.type = 'button';
+            element.addEventListener('click', () => adminRouteMap.focus(part));
+        }
+        element.append(title, detail);
+        row.append(element);
+        items.append(row);
+    }
+    byId('timeline-status').textContent = processed.parts.length ? '' : '有效定位太少，暂无法判断移动或停留。';
+    byId('timeline').hidden = false;
     const summary = byId('route-summary');
     summary.replaceChildren();
     for (const [label, value] of [
-        ['首次定位', routeTime.format(first.recordedAt)],
-        ['最后定位', routeTime.format(last.recordedAt)],
-        ['采样点', String(points.length)]
+        ['移动', totals.moving], ['停留', totals.stopped], ['记录不足', totals.gap + totals.uncertain]
     ]) {
         const item = document.createElement('div');
-        facts(item, [[label, value]]);
+        facts(item, [[label, duration(value)]]);
         summary.append(item);
     }
-    summary.hidden = false;
+    summary.hidden = !processed.parts.length;
 }
 
 async function loadRoute() {
@@ -569,11 +674,10 @@ async function loadRoute() {
         loadedRouteDate = value;
         byId('route-status').textContent = points.length ? '' : '该日期暂无足迹。';
         if (points.length) {
-            renderRouteSummary();
+            processed = adminRouteTimeline.process(points);
+            renderRouteTimeline();
             showPoints();
-            if (detailTab === 'route' && section === 'users') {
-                if (!adminRouteMap.show(points, at => routeTime.format(at))) drawRoute();
-            }
+            if (processed.fixes.length && detailTab === 'route' && section === 'users') showRouteMap();
         }
     } catch (error) {
         if (version !== routeVersion) return;
