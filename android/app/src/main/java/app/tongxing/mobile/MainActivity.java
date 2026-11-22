@@ -2079,6 +2079,7 @@ public final class MainActivity extends ComponentActivity {
         } else if (distance >= 50) {
             summary += String.format(Locale.CHINA, " · 估算路程 %.1f 公里", distance / 1000);
         }
+        if (raw.length() != route.length()) summary += " · 原始采样 " + raw.length() + " 个";
         if (routeHighlight == null) hint.setText(summary);
         updateMap(points, true, "route:" + partnerRoute + ":" + daysBack, recenter);
     }
