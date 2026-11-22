@@ -191,7 +191,7 @@ public class MainActivityTest {
                     String location = "{\"latitude\":34.75,\"longitude\":113.65,\"accuracy\":8,"
                             + "\"battery\":81,\"charging\":true,\"recordedAt\":" + now + "}";
                     if (path.equals("/api/overview")) {
-                        return reply(200, "{\"self\":{\"displayName\":\"Alice\",\"sharing\":false},"
+                        return reply(200, "{\"self\":{\"displayName\":\"Alice\",\"sharing\":false,\"lastLocation\":" + location + "},"
                                 + "\"partner\":{\"displayName\":\"Bob\",\"sharing\":true,\"lastLocation\":" + location
                                 + "},\"serverTime\":" + now + "}");
                     }
@@ -242,8 +242,9 @@ public class MainActivityTest {
                 text(root, "Bob").performClick();
                 var focused = org.robolectric.util.ReflectionHelpers.<JSONObject>getField(activity, "mapData");
                 assertEquals("partner", focused.optString("mode"));
-                assertEquals(1, focused.getJSONArray("points").length());
-                assertTrue(focused.getJSONArray("points").getJSONObject(0).getBoolean("partner"));
+                assertEquals(2, focused.getJSONArray("points").length());
+                assertFalse(focused.getJSONArray("points").getJSONObject(0).getBoolean("partner"));
+                assertTrue(focused.getJSONArray("points").getJSONObject(1).getBoolean("partner"));
                 text(root, "看双方").performClick();
                 assertEquals("live", org.robolectric.util.ReflectionHelpers.<JSONObject>getField(activity, "mapData").optString("mode"));
                 text(root, "展开").performClick();
@@ -286,6 +287,8 @@ public class MainActivityTest {
                 text(root, "设置").performClick();
                 assertNotNull(text(root, "权限与共享"));
                 assertNotNull(text(root, "修改密码"));
+                assertNotNull(text(root, "编辑显示名称"));
+                assertNull(text(root, "启用高德地点名称"));
                 assertNull(text(root, "查看我的应用使用明细"));
                 assertNull(text(root, "饮水和就寝提醒"));
                 assertNull(text(root, "清除我的轨迹"));

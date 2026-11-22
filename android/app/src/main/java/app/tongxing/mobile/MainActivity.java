@@ -69,6 +69,7 @@ public final class MainActivity extends ComponentActivity {
     private Button scanButton;
     private Button unpairButton;
     private TextView displayNameLine;
+    private TextView profileAvatar;
     private JSONObject overview;
     private boolean authenticated;
     private boolean registering;
@@ -407,12 +408,6 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout sheet = card(mapDock);
         sheet.setElevation(dp(5));
         sheet.setBackground(round(0xfffffdf9, 25));
-        var grab = new View(this);
-        grab.setBackground(round(0xffcbded3, 3));
-        var gripSize = new LinearLayout.LayoutParams(dp(33), dp(4));
-        gripSize.gravity = Gravity.CENTER_HORIZONTAL;
-        gripSize.bottomMargin = dp(7);
-        sheet.addView(grab, gripSize);
         LinearLayout overviewRow = row(sheet);
         overviewRow.setGravity(Gravity.CENTER_VERTICAL);
         partnerAvatar = label(overviewRow, "伴", 19, ACCENT);
@@ -433,7 +428,7 @@ public final class MainActivity extends ComponentActivity {
         identity.setOrientation(LinearLayout.VERTICAL);
         identity.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
         overviewRow.addView(identity);
-        partnerLine = label(identity, "正在读取伴侣状态", 20, INK);
+        partnerLine = label(identity, "伴侣", 19, INK);
         partnerLine.setMaxLines(1);
         partnerLine.setEllipsize(android.text.TextUtils.TruncateAt.END);
         partnerSyncLine = label(identity, "", 12, MUTED);
@@ -546,10 +541,15 @@ public final class MainActivity extends ComponentActivity {
             day.setBackground(ripple(day == dateButton ? LINEN : 0xfff4f6f3, 13));
             day.setTextColor(day.isEnabled() ? INK : 0xff68776f);
         }
-        hint = label(panel, "正在读取轨迹", 13, MUTED);
-        hint.setPadding(dp(4), dp(7), dp(4), 0);
+        mapDock = new LinearLayout(this);
+        mapDock.setOrientation(LinearLayout.VERTICAL);
+        mapDock.setPadding(dp(12), 0, dp(12), dp(10));
+        mapFrame.addView(mapDock, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        LinearLayout summary = card(mapDock);
+        summary.setElevation(dp(4));
+        hint = label(summary, "正在读取轨迹", 14, INK);
         displayedRoute = null;
-        var routeActions = row(panel);
+        var routeActions = row(summary);
         timelineButton = button(routeActions, "查看时间轴", false, this::showRouteTimeline);
         button(routeActions, "刷新足迹", false, () -> refresh(true));
         timelineButton.setCompoundDrawables(icon(7, ACCENT), null, null, null);
@@ -581,11 +581,26 @@ public final class MainActivity extends ComponentActivity {
 
     private void settingsScreen() {
         LinearLayout profile = card(content);
-        label(profile, "登录名 · " + api.savedUsername(), 18, INK).setTypeface(null, Typeface.BOLD);
-        displayNameLine = label(profile, "", 14, MUTED);
-        displayNameLine.setVisibility(View.GONE);
+        LinearLayout identity = row(profile);
+        identity.setPadding(0, dp(4), 0, dp(4));
+        profileAvatar = label(identity, initials(api.savedUsername()), 23, ACCENT);
+        profileAvatar.setGravity(Gravity.CENTER);
+        profileAvatar.setTypeface(null, Typeface.BOLD);
+        profileAvatar.setBackground(round(SOFT, 18));
+        var avatar = new LinearLayout.LayoutParams(dp(56), dp(56));
+        avatar.rightMargin = dp(14);
+        profileAvatar.setLayoutParams(avatar);
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
+        identity.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
+        displayNameLine = label(names, api.savedUsername(), 22, INK);
+        displayNameLine.setTypeface(null, Typeface.BOLD);
+        displayNameLine.setMaxLines(2);
+        displayNameLine.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        label(names, "登录名 · " + api.savedUsername(), 13, MUTED);
+        settingsAction(profile, "编辑显示名称", false, this::editDisplayName);
         LinearLayout binding = card(content);
-        label(binding, "伴侣绑定", 20, INK).setTypeface(null, Typeface.BOLD);
+        label(binding, "伴侣", 18, INK).setTypeface(null, Typeface.BOLD);
         partnerLine = label(binding, "正在读取绑定状态", 14, MUTED);
         scanButton = button(binding, "扫一扫绑定", true, this::scanPairCode);
         scanButton.setCompoundDrawables(icon(10, Color.WHITE), null, null, null);
@@ -604,7 +619,7 @@ public final class MainActivity extends ComponentActivity {
         scanButton.setVisibility(View.GONE);
         unpairButton.setVisibility(View.GONE);
         LinearLayout privacy = card(content);
-        label(privacy, "权限与共享", 20, INK).setTypeface(null, Typeface.BOLD);
+        label(privacy, "使用设置", 18, INK).setTypeface(null, Typeface.BOLD);
         settingsAction(privacy, "权限与共享", false, this::showPermissions);
         if (amapConfigured()) {
             boolean amap = api.amapMapAllowed();
@@ -613,22 +628,10 @@ public final class MainActivity extends ComponentActivity {
                 else showAmapConsent();
             });
         }
-        if (placeNamesAvailable()) {
-            boolean enabled = api.amapPlaceNames();
-            settingsAction(privacy, enabled ? "停用高德地点名称" : "启用高德地点名称", false, () -> {
-                if (enabled) {
-                    api.allowAmapPlaceNames(false);
-                    render();
-                } else {
-                    confirm("启用高德地点名称", "开启后，生成到离报备时会将停留区域的坐标发送给高德查询地点名称。",
-                            () -> { api.allowAmapPlaceNames(true); render(); });
-                }
-            });
-        }
         settingsAction(privacy, "紧急联系人", false, this::editEmergencyContact);
         settingsAction(privacy, "常去地点与到达提醒", false, this::showSavedPlaces);
         LinearLayout account = card(content);
-        label(account, "账号与数据", 20, INK).setTypeface(null, Typeface.BOLD);
+        label(account, "账号与数据", 18, INK).setTypeface(null, Typeface.BOLD);
         settingsAction(account, "修改密码", false, this::changePassword);
         settingsAction(account, "退出登录", false, this::logout);
         settingsAction(account, "注销账号", true, this::deleteAccount);
@@ -658,11 +661,6 @@ public final class MainActivity extends ComponentActivity {
         JSONObject config = overview == null ? null : overview.optJSONObject("mapConfig");
         String key = config == null ? "" : config.optString("amapAndroidKey", "");
         return key.matches("[0-9a-fA-F]{32}") ? key : "";
-    }
-
-    private boolean placeNamesAvailable() {
-        JSONObject config = overview == null ? null : overview.optJSONObject("mapConfig");
-        return config != null && config.optBoolean("placeNamesAvailable");
     }
 
     private void showAmapPrivacy() {
@@ -916,7 +914,7 @@ public final class MainActivity extends ComponentActivity {
 
     private void feedScreen() {
         LinearLayout compose = card(content);
-        label(compose, "发给伴侣", 16, INK).setTypeface(null, Typeface.BOLD);
+        label(compose, "给伴侣留言", 17, INK).setTypeface(null, Typeface.BOLD);
         messageInput = field(compose, "给伴侣发条消息", InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         messageInput.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(500)});
@@ -927,6 +925,8 @@ public final class MainActivity extends ComponentActivity {
         });
         button(actions, "快捷报备", false, this::showCheckIns);
         hint = label(compose, "", 14, MUTED);
+        gap(content, 16);
+        label(content, "最近动态", 18, INK).setTypeface(null, Typeface.BOLD);
         feedRows = new LinearLayout(this);
         feedRows.setOrientation(LinearLayout.VERTICAL);
         content.addView(feedRows);
@@ -1307,6 +1307,64 @@ public final class MainActivity extends ComponentActivity {
             }
         }
         return label;
+    }
+
+    private static String initials(String name) {
+        return name.isBlank() ? "我" : name.substring(0, name.offsetByCodePoints(0, 1));
+    }
+
+    private void editDisplayName() {
+        if (busy) return;
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(22), dp(8), dp(22), dp(8));
+        EditText name = field(body, "显示名称", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(32)});
+        JSONObject self = overview == null ? null : overview.optJSONObject("self");
+        String previous = self == null ? api.savedUsername() : self.optString("displayName", api.savedUsername());
+        name.setText(previous);
+        name.setSelection(name.length());
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("编辑显示名称")
+                .setMessage("伴侣会看到这个名称，登录名保持不变。最多 32 个字符。")
+                .setView(body).setNegativeButton("取消", null).setPositiveButton("保存", null).create();
+        dialog.show();
+        Button save = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        save.setOnClickListener(view -> {
+            String next = name.getText().toString().strip();
+            if (next.isBlank()) {
+                name.setError("请输入显示名称");
+                return;
+            }
+            if (previous.equals(next)) {
+                dialog.dismiss();
+                return;
+            }
+            save.setEnabled(false);
+            dialog.setCancelable(false);
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
+            execute(() -> api.mutate("PUT", "/account/profile", Api.json("displayName", next)), result -> {
+                dialog.dismiss();
+                if (overview != null && overview.optJSONObject("self") != null) {
+                    try {
+                        overview.optJSONObject("self").put("displayName", result.optString("displayName", next));
+                    } catch (org.json.JSONException impossible) {
+                        throw new IllegalStateException(impossible);
+                    }
+                    updateOverview(false);
+                }
+                refresh(false);
+            }, error -> {
+                if (error instanceof Api.Failure failure && failure.status == 401) {
+                    dialog.dismiss();
+                    showError(failure);
+                    return;
+                }
+                save.setEnabled(true);
+                dialog.setCancelable(true);
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(true);
+                name.setError(error instanceof Api.Failure ? error.getMessage() : "保存失败，请稍后重试");
+            });
+        });
     }
 
     private void changePassword() {
@@ -1748,9 +1806,9 @@ public final class MainActivity extends ComponentActivity {
             inviteButton.setVisibility(partner == null ? View.VISIBLE : View.GONE);
             pairButton.setVisibility(partner == null ? View.VISIBLE : View.GONE);
             scanButton.setVisibility(partner == null ? View.VISIBLE : View.GONE);
-            String displayName = self == null ? "" : self.optString("displayName");
-            displayNameLine.setText("显示名称 · " + displayName);
-            displayNameLine.setVisibility(displayName.isEmpty() ? View.GONE : View.VISIBLE);
+            String displayName = self == null ? api.savedUsername() : self.optString("displayName", api.savedUsername());
+            displayNameLine.setText(displayName);
+            profileAvatar.setText(initials(displayName));
             unpairButton.setVisibility(partner != null ? View.VISIBLE : View.GONE);
         }
         if (tab != 0 || self == null) return;
@@ -1783,7 +1841,7 @@ public final class MainActivity extends ComponentActivity {
         partnerDeviceLine.setText(screenTime);
         partnerDeviceLine.setVisibility(screenTime.isEmpty() ? View.GONE : View.VISIBLE);
         String partnerName = partner == null ? "" : partner.optString("displayName").trim();
-        partnerAvatar.setText(partnerName.isEmpty() ? "伴" : partnerName.substring(0, partnerName.offsetByCodePoints(0, 1)));
+        partnerAvatar.setText(partnerName.isEmpty() ? "伴" : initials(partnerName));
 
         hint.setOnClickListener(null);
         hint.setClickable(false);
@@ -1823,9 +1881,9 @@ public final class MainActivity extends ComponentActivity {
         }
         hint.setVisibility(hint.length() == 0 ? View.GONE : View.VISIBLE);
         JSONArray points = new JSONArray();
-        if (first != null && !partnerFocus) points.put(drawPoint(first, "我", false, !fresh(first, now)));
+        if (first != null) points.put(drawPoint(first, "我", false, !fresh(first, now)));
         if (second != null) points.put(drawPoint(second, placeName(second, partner.optString("displayName")), true, !fresh(second, now)));
-        updateMap(points, false, partnerFocus ? "partner" : "live", recenter);
+        updateMap(points, false, partnerFocus && second != null ? "partner" : "live", recenter);
     }
 
     private void focusPartner() {
@@ -2172,7 +2230,9 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(dp(15), dp(12), dp(15), dp(12));
-        layout.setBackground(round(Color.WHITE, 24));
+        GradientDrawable background = round(Color.WHITE, 20);
+        background.setStroke(dp(1), 0xffe3eae4);
+        layout.setBackground(background);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.topMargin = dp(10);
         parent.addView(layout, params);

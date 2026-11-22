@@ -80,9 +80,7 @@ final class Api {
         preferences.edit().remove("amap-map-key").putBoolean("amap-map-allowed", allowed).apply();
     }
 
-    boolean amapPlaceNames() { return accountPreference("amap-place-names:"); }
 
-    void allowAmapPlaceNames(boolean allowed) { setAccountPreference("amap-place-names:", allowed); }
 
     String emergencyContact() {
         return preferences.getString("emergency:" + accountKey(), "");

@@ -98,6 +98,13 @@ final class AmapMap implements NativeMap {
         boolean recenter = data.optBoolean("recenter");
         boolean changed = !nextMode.equals(mode);
         boolean live = "live".equals(nextMode) || "partner".equals(nextMode);
+        var cameraPoints = points;
+        if ("partner".equals(nextMode)) {
+            cameraPoints = new ArrayList<>();
+            for (int i = 0; i < points.size(); i++) {
+                if (raw.optJSONObject(i).optBoolean("partner")) cameraPoints.add(points.get(i));
+            }
+        }
         var padding = padding(data.optInt("top"), data.optInt("bottom"));
         if (changed || recenter) following = true;
         if (highlight != null) {
@@ -106,17 +113,17 @@ final class AmapMap implements NativeMap {
                 fit(selected, padding, 17);
             }
             mode = nextMode;
-        } else if (!points.isEmpty() && (changed || recenter
-                || (live && following && (points.size() != lastPointCount || outsideViewport(points, padding)
-                        || canZoomIn(points, padding))))) {
-            float zoom = "partner".equals(nextMode) || (live && points.size() > 1) ? map.getMaxZoomLevel() : 16;
-            fit(points, padding, zoom);
+        } else if (!cameraPoints.isEmpty() && (changed || recenter
+                || (live && following && (cameraPoints.size() != lastPointCount || outsideViewport(cameraPoints, padding)
+                        || canZoomIn(cameraPoints, padding))))) {
+            float zoom = "partner".equals(nextMode) || (live && cameraPoints.size() > 1) ? map.getMaxZoomLevel() : 16;
+            fit(cameraPoints, padding, zoom);
             mode = nextMode;
-        } else if (points.isEmpty()) {
+        } else if (cameraPoints.isEmpty()) {
             mode = "";
         }
         highlightId = nextHighlight;
-        lastPointCount = points.size();
+        lastPointCount = cameraPoints.size();
     }
 
     private List<LatLng> drawHighlight(JSONObject highlight) {

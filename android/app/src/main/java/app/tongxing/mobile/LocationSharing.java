@@ -345,8 +345,6 @@ public final class LocationSharing extends Service implements LocationListener {
                     }
                     if (generation.equals(shareKey) && !api.pausePending() && hasLocationPermission()) {
                         appendDeviceStatus(api, sample, now);
-                        if (api.amapPlaceNames()) sample.put("amapPlaceNames", true);
-                        else sample.remove("amapPlaceNames");
                         api.mutate("POST", "/positions", sample);
                         result = 204;
                         reportAppUsage(api, generation, now);

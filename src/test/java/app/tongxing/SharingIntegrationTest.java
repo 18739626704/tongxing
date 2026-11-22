@@ -118,6 +118,23 @@ class SharingIntegrationTest {
     }
 
     @Test
+    void changingDisplayNameKeepsLoginAndUpdatesTheBoundPartner() throws Exception {
+        Client member = new Client();
+        Client partner = new Client();
+        String username = "profile_" + UUID.randomUUID().toString().substring(0, 8);
+        member.mutate("POST", "/register", Map.of("username", username, "password", PASSWORD), 201);
+        member.login(username);
+        partner.signIn("ProfilePartner");
+        String code = member.mutate("POST", "/invite", "", 200).path("code").asText();
+        partner.mutate("POST", "/pair", Map.of("code", code), 204);
+        member.mutate("PUT", "/account/profile", Map.of("displayName", "  "), 400);
+        assertThat(member.mutate("PUT", "/account/profile", Map.of("displayName", "  山雀  "), 200)
+                .path("displayName").asText()).isEqualTo("山雀");
+        assertThat(partner.overview().at("/partner/displayName").asText()).isEqualTo("山雀");
+        new Client().login(username);
+    }
+
+    @Test
     void memberCanChangePasswordAndInvalidateAllOldSessions() throws Exception {
         String username = "member_pw_" + UUID.randomUUID().toString().substring(0, 8);
         Client first = new Client();
