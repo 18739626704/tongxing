@@ -30,7 +30,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.activity.ComponentActivity;
-import androidx.activity.result.contract.ActivityResultContracts;
+import com.journeyapps.barcodescanner.ScanContract;
+import com.journeyapps.barcodescanner.ScanOptions;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
@@ -109,15 +110,25 @@ public final class MainActivity extends ComponentActivity {
     private String knownPlacesPair = "";
     private LinearLayout mapStatus;
     private LinearLayout mapDock;
-    private final androidx.activity.result.ActivityResultLauncher<Intent> pairScanner =
-            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-                Intent data = result.getData();
-                if (!authenticated || result.getResultCode() != RESULT_OK || data == null) return;
-                if (data.getBooleanExtra(PairScanActivity.MANUAL, false)) pair();
-                else {
-                    String code = data.getStringExtra(PairScanActivity.CODE);
-                    if (code != null) pair(code);
+    private final androidx.activity.result.ActivityResultLauncher<ScanOptions> pairScanner =
+            registerForActivityResult(new ScanContract(), result -> {
+                if (!authenticated) return;
+                Intent data = result.getOriginalIntent();
+                if (data != null && data.getBooleanExtra(PairScanActivity.MANUAL, false)) {
+                    pair();
+                    return;
                 }
+                if (result.getContents() == null) return;
+                String code = PairQr.scan(result.getContents());
+                if (code.isEmpty()) {
+                    new AlertDialog.Builder(this).setTitle("无法识别邀请码")
+                            .setMessage("请扫描另一部手机上由同行生成的绑定二维码。")
+                            .setPositiveButton("重新扫码", (dialog, which) -> scanPairCode())
+                            .setNegativeButton("手动输入", (dialog, which) -> pair())
+                            .show();
+                    return;
+                }
+                pair(code);
             });
 
     private final Runnable poll = new Runnable() {
@@ -1356,7 +1367,9 @@ public final class MainActivity extends ComponentActivity {
                     .setPositiveButton("手动输入", (dialog, which) -> pair()).show();
             return;
         }
-        pairScanner.launch(new Intent(this, PairScanActivity.class));
+        pairScanner.launch(new ScanOptions().setCaptureActivity(PairScanActivity.class)
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE).setOrientationLocked(false)
+                .setBeepEnabled(false));
     }
 
     private void pair() { pair(""); }

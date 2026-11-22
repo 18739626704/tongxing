@@ -132,6 +132,26 @@ public class MainActivityTest {
     }
 
     @Test
+    public void scannerOpensWithPermissionPendingAndCanReturnToManualInput() {
+        var app = RuntimeEnvironment.getApplication();
+        shadowOf(app).denyPermissions(Manifest.permission.CAMERA);
+        Intent intent = new com.journeyapps.barcodescanner.ScanOptions()
+                .setCaptureActivity(PairScanActivity.class)
+                .setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
+                .setOrientationLocked(false).setBeepEnabled(false).createScanIntent(app);
+        try (var controller = Robolectric.buildActivity(PairScanActivity.class, intent).setup()) {
+            var activity = controller.get();
+            View root = activity.findViewById(android.R.id.content);
+            assertNotNull(text(root, "将同行绑定二维码放入取景框"));
+            assertFalse(activity.isFinishing());
+            text(root, "手动输入").performClick();
+            assertEquals(android.app.Activity.RESULT_OK, shadowOf(activity).getResultCode());
+            assertTrue(shadowOf(activity).getResultIntent().getBooleanExtra(PairScanActivity.MANUAL, false));
+            assertTrue(activity.isFinishing());
+        }
+    }
+
+    @Test
     public void scannerAcceptsOnlyValidTongxingPairCodes() {
         assertEquals("0123456789ABCDEF", PairQr.scan("tongxing:pair:0123456789abcdef"));
         assertEquals("0123456789ABCDEF", PairQr.code(" 0123456789abcdef "));
