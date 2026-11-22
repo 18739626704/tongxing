@@ -334,7 +334,7 @@ class SharingService {
         long now = System.currentTimeMillis();
         List<PositionSample> route = samples.selectList(query(target)
                 .ge("recorded_at", Math.max(from, now - RETENTION)).lt("recorded_at", to)
-                .orderByDesc("recorded_at", "id").last("LIMIT 5000"));
+                .orderByDesc("recorded_at", "id").last("LIMIT 7500"));
         Collections.reverse(route);
         return route.stream().map(SharingService::point).toList();
     }

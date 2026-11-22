@@ -3,7 +3,8 @@ package app.tongxing;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
-import java.security.Principal;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -20,6 +21,8 @@ class AdminController {
     record Accounts(List<Account> accounts, String next) {}
     record Detail(Account account, long serverTime, SharingController.Status status, SharingController.AppUsageSnapshot apps) {}
     record AccountState(@NotNull Boolean disabled) {}
+    record PasswordChange(@NotNull @Size(max = 128) String currentPassword,
+                          @NotNull @Size(max = 64) String newPassword) {}
     record AuditEntry(String action, String targetId, long occurredAt) {}
 
     private final SharingService sharing;
@@ -36,13 +39,24 @@ class AdminController {
     @GetMapping("/csrf")
     @ResponseBody
     Map<String, Object> csrf(CsrfToken token) {
-        return Map.of("header", token.getHeaderName(), "token", token.getToken(), "enabled", admin.enabled());
+        return Map.of("header", token.getHeaderName(), "token", token.getToken(), "enabled", admin.enabled(),
+                "initialLogin", admin.initialLogin());
     }
 
     @GetMapping("/api/session")
     @ResponseBody
-    Map<String, String> session(Principal principal) {
-        return Map.of("username", principal.getName());
+    Map<String, Object> session(@AuthenticationPrincipal AdminAccess.Principal principal) {
+        return Map.of("username", principal.getUsername(), "mustChangePassword", principal.mustChangePassword);
+    }
+
+    @PutMapping("/api/password")
+    @ResponseBody
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void changePassword(@AuthenticationPrincipal AdminAccess.Principal principal,
+                        @Valid @RequestBody PasswordChange change, HttpServletRequest request) {
+        admin.changePassword(principal, change.currentPassword(), change.newPassword());
+        var session = request.getSession(false);
+        if (session != null) session.invalidate();
     }
 
     @GetMapping("/api/accounts")

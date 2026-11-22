@@ -30,8 +30,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.activity.ComponentActivity;
-import com.journeyapps.barcodescanner.ScanContract;
-import com.journeyapps.barcodescanner.ScanOptions;
+import androidx.activity.result.contract.ActivityResultContracts;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
@@ -111,17 +110,15 @@ public final class MainActivity extends ComponentActivity {
     private String knownPlacesPair = "";
     private LinearLayout mapStatus;
     private LinearLayout mapDock;
-    private final androidx.activity.result.ActivityResultLauncher<ScanOptions> pairScanner =
-            registerForActivityResult(new ScanContract(), result -> {
-                if (!authenticated || result.getContents() == null) return;
-                String code = PairQr.scan(result.getContents());
-                if (code.isEmpty()) {
-                    new AlertDialog.Builder(this).setTitle("无法识别邀请码")
-                            .setMessage("请扫描另一部手机上由同行生成的绑定二维码。")
-                            .setPositiveButton("确定", null).show();
-                    return;
+    private final androidx.activity.result.ActivityResultLauncher<Intent> pairScanner =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                Intent data = result.getData();
+                if (!authenticated || result.getResultCode() != RESULT_OK || data == null) return;
+                if (data.getBooleanExtra(PairScanActivity.MANUAL, false)) pair();
+                else {
+                    String code = data.getStringExtra(PairScanActivity.CODE);
+                    if (code != null) pair(code);
                 }
-                pair(code);
             });
 
     private final Runnable poll = new Runnable() {
@@ -578,10 +575,15 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout binding = card(content);
         label(binding, "伴侣绑定", 20, INK).setTypeface(null, Typeface.BOLD);
         partnerLine = label(binding, "正在读取绑定状态", 14, MUTED);
+        scanButton = button(binding, "扫一扫绑定", true, this::scanPairCode);
+        scanButton.setCompoundDrawables(icon(10, Color.WHITE), null, null, null);
+        scanButton.setCompoundDrawablePadding(dp(9));
+        scanButton.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        scanButton.setPadding(dp(16), 0, dp(16), 0);
+        scanButton.getLayoutParams().height = dp(52);
         LinearLayout bindingActions = row(binding);
-        inviteButton = button(bindingActions, "生成邀请码", true, this::invite);
+        inviteButton = button(bindingActions, "出示二维码", false, this::invite);
         pairButton = button(bindingActions, "输入邀请码", false, this::pair);
-        scanButton = settingsAction(binding, "扫一扫绑定", false, this::scanPairCode);
         unpairButton = settingsAction(binding, "解除绑定", true, () ->
                 confirm("解除绑定", "双方将立即停止互相访问，本次绑定的轨迹和动态将被清除。",
                         () -> destructive("/pair")));
@@ -1373,8 +1375,7 @@ public final class MainActivity extends ComponentActivity {
                     .setPositiveButton("手动输入", (dialog, which) -> pair()).show();
             return;
         }
-        pairScanner.launch(new ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("请扫描同行绑定二维码").setBeepEnabled(false).setOrientationLocked(false));
+        pairScanner.launch(new Intent(this, PairScanActivity.class));
     }
 
     private void pair() { pair(""); }
@@ -1407,9 +1408,16 @@ public final class MainActivity extends ComponentActivity {
         }, ignored -> refresh(true));
     }
 
+    private void stopPositionCollection() {
+        stopService(new Intent(this, LocationSharing.class));
+        if (getDatabasePath("pending-positions.db").isFile()) {
+            try (var queue = new PendingPositions(this)) { queue.clear(); }
+        }
+    }
+
     private void stopLocalSharing() {
         nextSharingAttempt = 0;
-        stopService(new Intent(this, LocationSharing.class));
+        stopPositionCollection();
         clearLocationViews();
 
     }
@@ -2067,7 +2075,7 @@ public final class MainActivity extends ComponentActivity {
         busy = false;
         if (sosFixRequest != null) sosFixRequest.cancel();
         if (permissionDialog != null) permissionDialog.dismiss();
-        stopService(new Intent(this, LocationSharing.class));
+        stopPositionCollection();
         authenticated = false;
         if (mapPrivacyDialog != null) mapPrivacyDialog.dismiss();
         mapPrivacyShown = false;
@@ -2250,6 +2258,14 @@ public final class MainActivity extends ComponentActivity {
                         canvas.drawPath(path, paint);
                         canvas.drawLine(8, 9, 16, 9, paint);
                         canvas.drawLine(8, 13, 13, 13, paint);
+                    }
+                    case 10 -> {
+                        path.moveTo(3, 9); path.lineTo(3, 3); path.lineTo(9, 3);
+                        path.moveTo(15, 3); path.lineTo(21, 3); path.lineTo(21, 9);
+                        path.moveTo(21, 15); path.lineTo(21, 21); path.lineTo(15, 21);
+                        path.moveTo(9, 21); path.lineTo(3, 21); path.lineTo(3, 15);
+                        canvas.drawPath(path, paint);
+                        canvas.drawRect(9, 9, 15, 15, paint);
                     }
                     case 4 -> {
                         canvas.drawCircle(8.1f, 9, 4.2f, paint);

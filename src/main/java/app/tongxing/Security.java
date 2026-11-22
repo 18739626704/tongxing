@@ -21,7 +21,7 @@ import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.factory.PasswordEncoderFactories;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.logout.LogoutFilter;
 import org.springframework.security.web.authentication.logout.SecurityContextLogoutHandler;
@@ -38,17 +38,14 @@ class Security {
     @Bean
     @Order(1)
     SecurityFilterChain adminSecurity(HttpSecurity http, AdminAccess admin, PasswordEncoder passwords) throws Exception {
-        var directory = new InMemoryUserDetailsManager();
-        if (admin.enabled()) {
-            directory.createUser(User.withUsername(admin.username()).password(admin.encodedPassword()).roles("ADMIN").build());
-        }
-        var provider = new DaoAuthenticationProvider(directory);
+        var provider = new DaoAuthenticationProvider(admin::load);
         provider.setPasswordEncoder(passwords);
         http.securityMatcher("/admin", "/admin/**").authenticationManager(new ProviderManager(provider))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/admin", "/admin/", "/admin/index.html", "/admin/admin.css",
                                 "/admin/admin.js", "/admin/csrf", "/admin/login").permitAll()
                         .anyRequest().hasRole("ADMIN"))
+                .addFilterBefore(new AdminSessionCheck(admin), UsernamePasswordAuthenticationFilter.class)
                 .headers(headers -> headers.contentSecurityPolicy(policy -> policy.policyDirectives(
                         "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")));
         return sessionEndpoints(http, "/admin").build();
@@ -87,6 +84,37 @@ class Security {
                         .failureHandler((request, response, exception) -> response.setStatus(401)))
                 .logout(logout -> logout.logoutUrl(prefix + "/logout").deleteCookies("JSESSIONID")
                         .logoutSuccessHandler((request, response, authentication) -> response.setStatus(204)));
+    }
+
+    private static final class AdminSessionCheck extends OncePerRequestFilter {
+        private final AdminAccess admin;
+
+        AdminSessionCheck(AdminAccess admin) { this.admin = admin; }
+
+        @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                                                  FilterChain chain) throws ServletException, IOException {
+            String path = request.getServletPath();
+            if ("/admin/login".equals(path) && "POST".equals(request.getMethod())
+                    && !admin.acceptsBootstrapCode(request.getParameter("setupCode"))) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                return;
+            }
+            var authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (path.startsWith("/admin/api/") && authentication != null
+                    && authentication.getPrincipal() instanceof AdminAccess.Principal principal) {
+                if (!admin.valid(principal)) {
+                    new SecurityContextLogoutHandler().logout(request, response, authentication);
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    return;
+                }
+                if (principal.mustChangePassword && !"/admin/api/session".equals(path)
+                        && !AdminAccess.CHANGE_PASSWORD.equals(path)) {
+                    response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                    return;
+                }
+            }
+            chain.doFilter(request, response);
+        }
     }
 
     private static final class MemberPrincipal extends User {

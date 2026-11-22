@@ -3,6 +3,7 @@
 const byId = id => document.getElementById(id);
 const panel = byId('console');
 const loginPanel = byId('signin');
+const passwordPanel = byId('password-panel');
 const latest = new Intl.DateTimeFormat('zh-CN', {dateStyle: 'medium', timeStyle: 'medium'});
 const labels = {
     VIEW_STATUS: '查看位置与共享状态', VIEW_ROUTE: '查看足迹', DISABLE_ACCOUNT: '禁用账号', ENABLE_ACCOUNT: '恢复账号',
@@ -47,6 +48,8 @@ function notice(message) {
 
 function showSignIn(message = '') {
     panel.hidden = true;
+    passwordPanel.hidden = true;
+    updateBootstrapField().catch(() => {});
     byId('identity').hidden = true;
     loginPanel.hidden = false;
     selected = null;
@@ -64,10 +67,32 @@ function handle(error) {
     else notice(error.message || '无法连接服务器。');
 }
 
+async function updateBootstrapField() {
+    const settings = await request('/csrf');
+    const setup = byId('setup-code');
+    setup.hidden = !settings.initialLogin;
+    setup.querySelector('input').required = settings.initialLogin;
+    return settings;
+}
+
+function openPasswordForm(mandatory) {
+    panel.hidden = true;
+    loginPanel.hidden = true;
+    passwordPanel.hidden = false;
+    byId('password-form').reset();
+    notice(mandatory ? '首次登录请先设置自己的管理员密码。' : '');
+}
+
 async function openConsole(session) {
     byId('administrator').textContent = session.username;
     byId('identity').hidden = false;
     loginPanel.hidden = true;
+    byId('change-password').hidden = session.mustChangePassword;
+    if (session.mustChangePassword) {
+        openPasswordForm(true);
+        return;
+    }
+    passwordPanel.hidden = true;
     panel.hidden = false;
     byId('details').hidden = true;
     byId('selection-status').textContent = '选择一个账号查看详情。';
@@ -294,10 +319,31 @@ byId('login').addEventListener('submit', async event => {
         form.reset();
         await openConsole(await request('/api/session'));
     } catch (error) {
-        notice(error.status === 401 ? '管理员账号或密码不正确。' : error.message);
+        notice(error.status === 401 ? '管理员账号、密码或首次设置码不正确。' : error.message);
     } finally {
         submit.disabled = false;
     }
+});
+byId('change-password').addEventListener('click', () => openPasswordForm(false));
+byId('password-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const newPassword = values.get('newPassword');
+    if (newPassword !== values.get('confirmation')) {
+        notice('两次输入的新密码不一致。');
+        return;
+    }
+    const submit = form.querySelector('button');
+    submit.disabled = true;
+    try {
+        await request('/api/password', {method: 'PUT', body: JSON.stringify({
+            currentPassword: values.get('currentPassword'), newPassword
+        })});
+        form.reset();
+        showSignIn('密码已更新，请用新密码登录。');
+    } catch (error) { handle(error); }
+    finally { submit.disabled = false; }
 });
 byId('logout').addEventListener('click', async () => {
     try {
@@ -377,7 +423,7 @@ window.setInterval(() => {
 }, 15000);
 (async () => {
     try {
-        const settings = await request('/csrf');
+        const settings = await updateBootstrapField();
         if (!settings.enabled) {
             notice('此实例尚未启用管理控制台。');
             return;
