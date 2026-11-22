@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.datasource.url=jdbc:h2:mem:adminbootstrap;MODE=MySQL;DB_CLOSE_DELAY=-1",
         "spring.datasource.username=sa", "spring.datasource.password=",
-        "server.servlet.session.cookie.secure=false", "ADMIN_BOOTSTRAP_CODE=integration-test-only-bootstrap-code"
+        "server.servlet.session.cookie.secure=false", "ADMIN_INITIAL_PASSWORD=integration-temp-password"
 })
 class AdminBootstrapIntegrationTest {
     @LocalServerPort int port;
@@ -24,26 +24,25 @@ class AdminBootstrapIntegrationTest {
     private final HttpClient client = HttpClient.newBuilder().cookieHandler(new CookieManager()).build();
 
     @Test
-    void firstLoginRequiresTheSetupCodeAndConfinesAccessUntilPasswordChange() throws Exception {
-        assertThat(token().path("initialLogin").asBoolean()).isTrue();
-        assertThat(login("123456", "")).isEqualTo(401);
-        assertThat(login("123456", "integration-test-only-bootstrap-code")).isEqualTo(204);
+    void firstLoginGoesStraightToPasswordChange() throws Exception {
+        assertThat(token().path("enabled").asBoolean()).isTrue();
+        assertThat(login("123456")).isEqualTo(401);
+        assertThat(login("integration-temp-password")).isEqualTo(204);
         assertThat(json.readTree(send("GET", "/api/session", "", null).body()).path("mustChangePassword").asBoolean()).isTrue();
         assertThat(send("GET", "/api/accounts", "", null).statusCode()).isEqualTo(403);
-        assertThat(send("PUT", "/api/password", "{\"currentPassword\":\"123456\",\"newPassword\":\"short\"}", token()).statusCode())
+        assertThat(send("PUT", "/api/password", "{\"currentPassword\":\"integration-temp-password\",\"newPassword\":\"short\"}", token()).statusCode())
                 .isEqualTo(400);
         assertThat(send("PUT", "/api/password",
-                "{\"currentPassword\":\"123456\",\"newPassword\":\"integration-test-new-admin-password\"}", token()).statusCode())
+                "{\"currentPassword\":\"integration-temp-password\",\"newPassword\":\"integration-test-new-admin-password\"}", token()).statusCode())
                 .isEqualTo(204);
         assertThat(send("GET", "/api/session", "", null).statusCode()).isEqualTo(401);
-        assertThat(token().path("initialLogin").asBoolean()).isFalse();
-        assertThat(login("123456", "integration-test-only-bootstrap-code")).isEqualTo(401);
-        assertThat(login("integration-test-new-admin-password", "")).isEqualTo(204);
+        assertThat(login("integration-temp-password")).isEqualTo(401);
+        assertThat(login("integration-test-new-admin-password")).isEqualTo(204);
         assertThat(send("GET", "/api/accounts", "", null).statusCode()).isEqualTo(200);
     }
 
-    private int login(String password, String code) throws Exception {
-        return send("POST", "/login", "username=admin&password=" + password + "&setupCode=" + code, token()).statusCode();
+    private int login(String password) throws Exception {
+        return send("POST", "/login", "username=admin&password=" + password, token()).statusCode();
     }
 
     private JsonNode token() throws Exception {

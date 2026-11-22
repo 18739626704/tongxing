@@ -62,7 +62,7 @@ class SharingIntegrationTest {
     }
 
     @Test
-    void adminAccessRequiresSeparateCredentialsAndExplicitLocationConsent() throws Exception {
+    void adminCanReadStoredRecordsWithoutChangingPartnerAccess() throws Exception {
         String username = "admin_target";
         var member = new Client();
         member.mutate("POST", "/register", Map.of("username", username, "password", PASSWORD), 201);
@@ -90,27 +90,29 @@ class SharingIntegrationTest {
         assertThat(accounts.body()).doesNotContain("passwordHash", "shareKey", "JSESSIONID");
         String target = "/api/accounts/" + json.readTree(accounts.body()).at("/accounts/0/id").asText();
         String route = target + "/positions?from=" + (now - 1000) + "&to=" + (now + 1000);
-        assertThat(json.readTree(operator.admin("GET", target, "", null).body()).path("status").isNull()).isTrue();
-        assertThat(operator.admin("GET", route, "", null).statusCode()).isEqualTo(403);
-        member.mutate("PUT", "/admin-location-sharing", Map.of("enabled", true), 204);
+        member.mutate("POST", "/messages", Map.of("text", "模拟动态"), 204);
+        member.mutate("POST", "/saved-places", Map.of("name", "模拟地点", "point", Map.of("latitude", 10.25, "longitude", 20.5)), 200);
         assertThat(json.readTree(operator.admin("GET", target, "", null).body())
                 .at("/status/lastLocation/latitude").asDouble()).isEqualTo(10.25);
         assertThat(json.readTree(operator.admin("GET", route, "", null).body()).size()).isEqualTo(1);
-        member.mutate("PUT", "/admin-location-sharing", Map.of("enabled", false), 204);
-        assertThat(operator.admin("GET", route, "", null).statusCode()).isEqualTo(403);
-        member.mutate("PUT", "/admin-location-sharing", Map.of("enabled", true), 204);
+        assertThat(operator.admin("GET", target + "/activity", "", null).body()).contains("模拟动态");
+        assertThat(operator.admin("GET", target + "/places", "", null).body()).contains("模拟地点");
+        assertThat(member.admin("GET", target + "/activity", "", null).statusCode()).isEqualTo(403);
+        member.mutate("PUT", "/sharing", Map.of("enabled", false), 200);
+        assertThat(partner.overview().at("/partner/lastLocation").isNull()).isTrue();
+        assertThat(json.readTree(operator.admin("GET", route, "", null).body()).size()).isEqualTo(1);
 
         assertThat(operator.admin("PUT", target, "{\"disabled\":true}", null).statusCode()).isEqualTo(403);
         assertThat(operator.admin("PUT", target, "{\"disabled\":true}", operator.adminToken()).statusCode()).isEqualTo(204);
         assertThat(partner.overview().at("/partner/sharing").asBoolean()).isFalse();
-        assertThat(operator.admin("GET", route, "", null).statusCode()).isEqualTo(403);
+        assertThat(json.readTree(operator.admin("GET", route, "", null).body()).size()).isEqualTo(1);
         var otherSession = new Client();
         assertThat(otherSession.send("POST", "/login", "username=" + username + "&password=" + PASSWORD,
                 "application/x-www-form-urlencoded", otherSession.token()).statusCode()).isEqualTo(401);
         assertThat(operator.admin("PUT", target, "{\"disabled\":false}", operator.adminToken()).statusCode()).isEqualTo(204);
         assertThat(member.get("/overview").statusCode()).isEqualTo(401);
         otherSession.login(username);
-        assertThat(otherSession.overview().path("adminLocationAllowed").asBoolean()).isFalse();
+        assertThat(otherSession.overview().at("/self/sharing").asBoolean()).isFalse();
         assertThat(operator.admin("GET", "/api/audit", "", null).body())
                 .contains("VIEW_ROUTE", "DISABLE_ACCOUNT", "ENABLE_ACCOUNT");
     }

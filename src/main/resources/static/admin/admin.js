@@ -6,7 +6,8 @@ const loginPanel = byId('signin');
 const passwordPanel = byId('password-panel');
 const latest = new Intl.DateTimeFormat('zh-CN', {dateStyle: 'medium', timeStyle: 'medium'});
 const labels = {
-    VIEW_STATUS: '查看位置与共享状态', VIEW_ROUTE: '查看足迹', DISABLE_ACCOUNT: '禁用账号', ENABLE_ACCOUNT: '恢复账号',
+    VIEW_STATUS: '查看位置与共享状态', VIEW_ROUTE: '查看足迹',
+    VIEW_ACTIVITY: '查看动态', VIEW_PLACES: '查看常去地点', DISABLE_ACCOUNT: '禁用账号', ENABLE_ACCOUNT: '恢复账号',
     WIFI: 'Wi-Fi', MOBILE: '移动网络', ETHERNET: '以太网', VPN: 'VPN', OTHER: '其他', OFFLINE: '离线',
     FAST: '快速移动', MOVING: '移动', STILL: '静止', STOPPED: '停留', TRAVELLING: '移动中',
     OFF: '熄屏', LOCKED: '锁屏', UNLOCKED: '已解锁'
@@ -19,6 +20,8 @@ let nextCursor;
 let requestVersion = 0;
 let listVersion = 0;
 let routeVersion = 0;
+let recordsVersion = 0;
+let activityBefore;
 let points = [];
 let pointPage = 0;
 const pointPageSize = 100;
@@ -49,7 +52,6 @@ function notice(message) {
 function showSignIn(message = '') {
     panel.hidden = true;
     passwordPanel.hidden = true;
-    updateBootstrapField().catch(() => {});
     byId('identity').hidden = true;
     loginPanel.hidden = false;
     selected = null;
@@ -65,14 +67,6 @@ function showSignIn(message = '') {
 function handle(error) {
     if (error.status === 401) showSignIn('请登录管理员账号。');
     else notice(error.message || '无法连接服务器。');
-}
-
-async function updateBootstrapField() {
-    const settings = await request('/csrf');
-    const setup = byId('setup-code');
-    setup.hidden = !settings.initialLogin;
-    setup.querySelector('input').required = settings.initialLogin;
-    return settings;
 }
 
 function openPasswordForm(mandatory) {
@@ -171,6 +165,13 @@ function clearLocation(message = '') {
     byId('apps').replaceChildren();
     byId('usage').hidden = true;
     byId('route-form').hidden = true;
+    recordsVersion++;
+    activityBefore = null;
+    byId('stored-records').open = false;
+    byId('more-activity').hidden = true;
+    byId('records-status').textContent = '';
+    byId('saved-places').replaceChildren();
+    byId('activities').replaceChildren();
     clearRoute();
 }
 
@@ -211,14 +212,9 @@ function renderDetail(detail) {
     facts(byId('profile'), [
         ['登录名', account.username], ['显示名称', account.displayName], ['账号 ID', account.id],
         ['账号状态', account.disabled ? '已禁用' : '启用'], ['伴侣绑定', account.paired ? '已绑定' : '未绑定'],
-        ['位置共享', account.sharing ? '共享中' : '已暂停'],
-        ['管理员查看授权', account.adminLocationAllowed ? '已授权' : '未授权']
+        ['向伴侣共享位置', account.sharing ? '共享中' : '已暂停']
     ]);
     byId('set-account-state').textContent = account.disabled ? '恢复账号' : '禁用账号';
-    if (!status) {
-        clearLocation(account.adminLocationAllowed ? '当前没有启用位置共享。' : '用户尚未授权管理员查看位置和足迹。');
-        return;
-    }
     const position = status.lastLocation;
     const age = position ? Math.max(0, Math.round((detail.serverTime - position.recordedAt) / 1000)) : null;
     byId('location-status').textContent = position
@@ -248,6 +244,46 @@ function renderDetail(detail) {
     }
     byId('usage').hidden = !apps.childElementCount;
     byId('route-form').hidden = false;
+}
+
+async function loadRecords(earlier) {
+    if (!selected || (earlier && !activityBefore)) return;
+    const account = selected;
+    const version = ++recordsVersion;
+    const prefix = '/api/accounts/' + account;
+    byId('records-status').textContent = '正在读取…';
+    try {
+        const [activity, places] = await Promise.all([
+            request(prefix + '/activity' + (earlier ? '?before=' + activityBefore : '')),
+            earlier ? Promise.resolve(null) : request(prefix + '/places')
+        ]);
+        if (version !== recordsVersion || account !== selected || panel.hidden) return;
+        if (places) {
+            renderRecordLines(byId('saved-places'), places.map(place => (
+                place.name + ' · ' + place.latitude.toFixed(6) + ', ' + place.longitude.toFixed(6)
+                    + (place.watching ? ' · 到达提醒已开启' : '')
+            )), true);
+        }
+        renderRecordLines(byId('activities'), activity.items.map(item =>
+            displayTime(item.createdAt) + ' · ' + item.text
+        ), !earlier);
+        activityBefore = activity.before;
+        byId('more-activity').hidden = !activityBefore;
+        byId('records-status').textContent = activity.items.length || places?.length ? '' : '暂无记录。';
+    } catch (error) {
+        if (version !== recordsVersion) return;
+        byId('records-status').textContent = '读取记录失败。';
+        handle(error);
+    }
+}
+
+function renderRecordLines(list, lines, replace) {
+    if (replace) list.replaceChildren();
+    for (const line of lines) {
+        const item = document.createElement('li');
+        item.textContent = line;
+        list.append(item);
+    }
 }
 
 function drawRoute() {
@@ -319,7 +355,7 @@ byId('login').addEventListener('submit', async event => {
         form.reset();
         await openConsole(await request('/api/session'));
     } catch (error) {
-        notice(error.status === 401 ? '管理员账号、密码或首次设置码不正确。' : error.message);
+        notice(error.status === 401 ? '管理员账号或密码不正确。' : error.message);
     } finally {
         submit.disabled = false;
     }
@@ -372,7 +408,7 @@ byId('set-account-state').addEventListener('click', async () => {
     if (!account) return;
     const disabled = !account.disabled;
     if (!window.confirm(disabled ? '禁用 ' + account.username + '？当前登录及位置共享会失效。'
-        : '恢复 ' + account.username + '？账号可重新登录，控制台查看需要用户重新授权。')) return;
+        : '恢复 ' + account.username + '？账号可重新登录，历史记录按服务器的保留规则显示。')) return;
     const button = byId('set-account-state');
     button.disabled = true;
     try {
@@ -382,6 +418,8 @@ byId('set-account-state').addEventListener('click', async () => {
     } catch (error) { handle(error); }
     finally { button.disabled = false; }
 });
+byId('load-records').addEventListener('click', () => loadRecords(false));
+byId('more-activity').addEventListener('click', () => loadRecords(true));
 byId('route-form').addEventListener('submit', async event => {
     event.preventDefault();
     if (!selectedDetail?.status) return;
@@ -401,7 +439,7 @@ byId('route-form').addEventListener('submit', async event => {
         }
     } catch (error) {
         if (version !== routeVersion) return;
-        clearRoute(error.status === 403 ? '位置共享已暂停或授权已撤回。' : '足迹读取失败。');
+        clearRoute('足迹读取失败。');
         if (error.status === 401) handle(error);
     }
 });
@@ -423,7 +461,7 @@ window.setInterval(() => {
 }, 15000);
 (async () => {
     try {
-        const settings = await updateBootstrapField();
+        const settings = await request('/csrf');
         if (!settings.enabled) {
             notice('此实例尚未启用管理控制台。');
             return;

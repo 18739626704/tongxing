@@ -2,7 +2,6 @@ package app.tongxing;
 
 import app.tongxing.store.WriteGuard;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -18,10 +17,9 @@ import org.springframework.web.server.ResponseStatusException;
 @Component
 class AdminAccess {
     static final String CHANGE_PASSWORD = "/admin/api/password";
-    private static final String INITIAL_PASSWORD = "123456";
+    private static final String LEGACY_DEFAULT = "123456";
     private final String username;
     private final String configuredHash;
-    private final String bootstrapCode;
     private final JdbcTemplate jdbc;
     private final WriteGuard guard;
     private final PasswordEncoder passwords;
@@ -29,11 +27,10 @@ class AdminAccess {
 
     AdminAccess(@Value("${ADMIN_USERNAME:}") String username,
                 @Value("${ADMIN_PASSWORD_HASH:}") String passwordHash,
-                @Value("${ADMIN_BOOTSTRAP_CODE:}") String bootstrapCode,
+                @Value("${ADMIN_INITIAL_PASSWORD:}") String initialPassword,
                 JdbcTemplate jdbc, WriteGuard guard, PasswordEncoder passwords) {
-        this.bootstrapCode = bootstrapCode.strip();
         this.configuredHash = passwordHash.strip();
-        this.username = !this.bootstrapCode.isEmpty() && configuredHash.isEmpty() ? "admin" : username.strip();
+        this.username = !initialPassword.isEmpty() && configuredHash.isEmpty() && username.isBlank() ? "admin" : username.strip();
         this.jdbc = jdbc;
         this.guard = guard;
         this.passwords = passwords;
@@ -43,10 +40,11 @@ class AdminAccess {
         if (!configuredHash.isEmpty() && this.username.isEmpty()) {
             throw new IllegalArgumentException("ADMIN_USERNAME is required with ADMIN_PASSWORD_HASH");
         }
-        if (!this.bootstrapCode.isEmpty() && this.bootstrapCode.length() < 20) {
-            throw new IllegalArgumentException("ADMIN_BOOTSTRAP_CODE must have at least 20 characters");
+        if (!initialPassword.isEmpty() && (initialPassword.isBlank() || initialPassword.length() < 10
+                || initialPassword.length() > 64 || initialPassword.getBytes(StandardCharsets.UTF_8).length > 72)) {
+            throw new IllegalArgumentException("ADMIN_INITIAL_PASSWORD must be 10 to 64 characters and at most 72 bytes");
         }
-        initialHash = !this.bootstrapCode.isEmpty() && configuredHash.isEmpty() ? passwords.encode(INITIAL_PASSWORD) : "";
+        initialHash = !initialPassword.isEmpty() && configuredHash.isEmpty() ? passwords.encode(initialPassword) : "";
     }
 
     record Credential(String hash, long revision, boolean initial) {}
@@ -63,14 +61,6 @@ class AdminAccess {
     }
 
     boolean enabled() { return !configuredHash.isEmpty() || !initialHash.isEmpty(); }
-
-    boolean initialLogin() { return enabled() && credential().initial(); }
-
-    boolean acceptsBootstrapCode(String input) {
-        if (!initialLogin()) return true;
-        if (input == null || input.length() > 256) return false;
-        return MessageDigest.isEqual(bootstrapCode.getBytes(StandardCharsets.UTF_8), input.getBytes(StandardCharsets.UTF_8));
-    }
 
     Principal load(String login) {
         if (!enabled() || !username.equalsIgnoreCase(login)) throw new UsernameNotFoundException("Admin account not found");
@@ -94,7 +84,7 @@ class AdminAccess {
         if (next.isBlank() || next.length() < 10 || next.length() > 64 || next.getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "新密码须为 10–64 个字符，且不超过 72 字节");
         }
-        if (INITIAL_PASSWORD.equals(next) || next.equals(current)) {
+        if (LEGACY_DEFAULT.equals(next) || next.equals(current)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "新密码请与当前密码和初始密码不同");
         }
         guard.lock();

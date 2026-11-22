@@ -17,9 +17,12 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/admin")
 class AdminController {
     record Account(String id, String username, String displayName, boolean disabled,
-                   boolean paired, boolean sharing, boolean adminLocationAllowed) {}
+                   boolean paired, boolean sharing) {}
     record Accounts(List<Account> accounts, String next) {}
     record Detail(Account account, long serverTime, SharingController.Status status, SharingController.AppUsageSnapshot apps) {}
+    record Activity(long id, String kind, String text, long createdAt, Long receivedAt, Long viewedAt) {}
+    record Activities(List<Activity> items, Long before) {}
+    record SavedLocation(String name, double latitude, double longitude, boolean watching) {}
     record AccountState(@NotNull Boolean disabled) {}
     record PasswordChange(@NotNull @Size(max = 128) String currentPassword,
                           @NotNull @Size(max = 64) String newPassword) {}
@@ -39,8 +42,7 @@ class AdminController {
     @GetMapping("/csrf")
     @ResponseBody
     Map<String, Object> csrf(CsrfToken token) {
-        return Map.of("header", token.getHeaderName(), "token", token.getToken(), "enabled", admin.enabled(),
-                "initialLogin", admin.initialLogin());
+        return Map.of("header", token.getHeaderName(), "token", token.getToken(), "enabled", admin.enabled());
     }
 
     @GetMapping("/api/session")
@@ -84,6 +86,18 @@ class AdminController {
     List<SharingController.Point> positions(@PathVariable UUID id, @RequestParam long from, @RequestParam long to) {
         return sharing.adminRoute(id.toString(), from, to);
     }
+
+    @GetMapping("/api/accounts/{id}/activity")
+    @ResponseBody
+    Activities activity(@PathVariable UUID id, @RequestParam(required = false) Long before) {
+        List<Activity> items = sharing.adminActivity(id.toString(), before);
+        return items.size() <= 50 ? new Activities(items, null)
+                : new Activities(items.subList(0, 50), items.get(49).id());
+    }
+
+    @GetMapping("/api/accounts/{id}/places")
+    @ResponseBody
+    List<SavedLocation> places(@PathVariable UUID id) { return sharing.adminPlaces(id.toString()); }
 
     @GetMapping("/api/audit")
     @ResponseBody

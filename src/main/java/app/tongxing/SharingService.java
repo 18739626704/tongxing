@@ -32,7 +32,6 @@ class SharingService {
     private final InvitationMapper invitations;
     private final PositionSampleMapper samples;
     private final WriteGuard guard;
-    private final AdminAccess admin;
     private final JdbcTemplate jdbc;
     private final SavedPlaces places;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
@@ -43,14 +42,13 @@ class SharingService {
     private final SecureRandom random = new SecureRandom();
 
     SharingService(MemberMapper members, InvitationMapper invitations, PositionSampleMapper samples, WriteGuard guard,
-                   PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json, AdminAccess admin,
+                   PasswordEncoder passwords, JdbcTemplate jdbc, com.fasterxml.jackson.databind.ObjectMapper json,
                    AmapPlaceNames placeNames, SavedPlaces places, @Value("${AMAP_ANDROID_KEY:}") String amapAndroidKey,
                    @Value("${tongxing.registration-enabled}") boolean registrationEnabled) {
         this.members = members;
         this.invitations = invitations;
         this.samples = samples;
         this.guard = guard;
-        this.admin = admin;
         this.passwords = passwords;
         this.placeNames = placeNames;
         this.places = places;
@@ -220,22 +218,12 @@ class SharingService {
         Member partner = partnerOf(self);
         long now = System.currentTimeMillis();
         return new Overview(status(self, now), partner == null ? null : status(partner, now), now, self.pairId,
-                new MapConfig(amapAndroidKey, placeNames.configured()), admin.enabled(), admin.enabled() && self.adminLocationAllowed);
-    }
-
-    @Transactional
-    public void adminLocationConsent(String username, boolean enabled) {
-        guard.lock();
-        Member self = current(username);
-        if (enabled && (!admin.enabled() || self.pairId == null)) {
-            throw failure(HttpStatus.CONFLICT, "需启用管理控制台并完成伴侣绑定后才能授权");
-        }
-        jdbc.update("UPDATE member SET admin_location_allowed = ? WHERE id = ?", enabled, self.id);
+                new MapConfig(amapAndroidKey, placeNames.configured()));
     }
 
     public List<Account> adminAccounts(String search, String after) {
         QueryWrapper<Member> query = new QueryWrapper<Member>()
-                .select("id", "username", "display_name", "pair_id", "disabled", "sharing", "admin_location_allowed");
+                .select("id", "username", "display_name", "pair_id", "disabled", "sharing");
         if (!search.isBlank()) {
             query.and(columns -> columns.like("username", search).or().like("display_name", search));
         }
@@ -249,22 +237,42 @@ class SharingService {
         guard.lock();
         Member target = adminTarget(id);
         long now = System.currentTimeMillis();
-        if (!adminCanSeeLocation(target)) return new Detail(account(target), now, null, null);
         audit("VIEW_STATUS", id);
-        return new Detail(account(target), now, status(target, now),
-                target.appUsageEnabled ? appUsageSnapshot(target) : null);
+        return new Detail(account(target), now, status(target, now, true), appUsageSnapshot(target));
     }
 
     @Transactional
     public List<Point> adminRoute(String id, long from, long to) {
         validateRouteRange(from, to);
         guard.lock();
-        Member target = adminTarget(id);
-        if (!adminCanSeeLocation(target)) {
-            throw failure(HttpStatus.FORBIDDEN, "用户尚未授权或已暂停共享");
-        }
+        adminTarget(id);
         audit("VIEW_ROUTE", id);
-        return routePoints(target, from, to);
+        return routePoints(new QueryWrapper<PositionSample>().eq("member_id", id), from, to);
+    }
+
+    @Transactional
+    public List<Activity> adminActivity(String id, Long before) {
+        guard.lock();
+        adminTarget(id);
+        audit("VIEW_ACTIVITY", id);
+        return jdbc.query("""
+                SELECT id, kind, body, created_at, received_at, viewed_at FROM companion_event
+                WHERE sender_id = ? AND created_at >= ? AND id < ? ORDER BY id DESC LIMIT 51
+                """, (row, index) -> new Activity(row.getLong("id"), row.getString("kind"), row.getString("body"),
+                row.getLong("created_at"), row.getObject("received_at", Long.class), row.getObject("viewed_at", Long.class)),
+                id, System.currentTimeMillis() - RETENTION, before == null ? Long.MAX_VALUE : before);
+    }
+
+    @Transactional
+    public List<SavedLocation> adminPlaces(String id) {
+        guard.lock();
+        adminTarget(id);
+        audit("VIEW_PLACES", id);
+        return jdbc.query("""
+                SELECT name, latitude, longitude, watching FROM companion_place
+                WHERE owner_id = ? ORDER BY name, id
+                """, (row, index) -> new SavedLocation(row.getString("name"), row.getDouble("latitude"),
+                row.getDouble("longitude"), row.getBoolean("watching")), id);
     }
 
     @Transactional
@@ -275,7 +283,7 @@ class SharingService {
         if (disabled) {
             jdbc.update("""
                     UPDATE member SET disabled = TRUE, session_version = session_version + 1,
-                        admin_location_allowed = FALSE, sharing = FALSE, share_key = NULL, location_unavailable = FALSE
+                        sharing = FALSE, share_key = NULL, location_unavailable = FALSE
                     WHERE id = ?
                     """, id);
             invitations.delete(new QueryWrapper<Invitation>().eq("member_id", id));
@@ -305,13 +313,9 @@ class SharingService {
         return target;
     }
 
-    private boolean adminCanSeeLocation(Member target) {
-        return admin.enabled() && !target.disabled && target.adminLocationAllowed && target.sharing && target.pairId != null;
-    }
-
     private static Account account(Member member) {
         return new Account(member.id, member.username, member.displayName, member.disabled, member.pairId != null,
-                member.sharing, member.adminLocationAllowed);
+                member.sharing);
     }
 
     @Transactional
@@ -321,7 +325,7 @@ class SharingService {
         Member self = current(username);
         Member target = partner ? partnerOf(self) : self;
         if (target == null || target.pairId == null || (partner && !target.sharing)) return List.of();
-        return routePoints(target, from, to);
+        return routePoints(query(target), from, to);
     }
 
     private static void validateRouteRange(long from, long to) {
@@ -330,9 +334,9 @@ class SharingService {
         }
     }
 
-    private List<Point> routePoints(Member target, long from, long to) {
+    private List<Point> routePoints(QueryWrapper<PositionSample> query, long from, long to) {
         long now = System.currentTimeMillis();
-        List<PositionSample> route = samples.selectList(query(target)
+        List<PositionSample> route = samples.selectList(query
                 .ge("recorded_at", Math.max(from, now - RETENTION)).lt("recorded_at", to)
                 .orderByDesc("recorded_at", "id").last("LIMIT 7500"));
         Collections.reverse(route);
@@ -815,27 +819,37 @@ class SharingService {
     }
 
     private Status status(Member member, long now) {
+        return status(member, now, false);
+    }
+
+    private Status status(Member member, long now, boolean administrator) {
         boolean sharing = member.sharing && member.pairId != null;
-        PositionSample latest = sharing ? lastPoint(member, now) : null;
-        DeviceStatus device = sharing && member.deviceStatusEnabled && member.deviceStatusAt != null
+        boolean showStored = administrator || sharing;
+        PositionSample latest = administrator ? latestPoint(new QueryWrapper<PositionSample>().eq("member_id", member.id), now)
+                : sharing ? lastPoint(member, now) : null;
+        DeviceStatus device = showStored && (administrator || member.deviceStatusEnabled) && member.deviceStatusAt != null
                 ? new DeviceStatus(member.deviceModel, visibleNetwork(member.networkType), member.deviceStatusAt,
                         member.deviceUnlockedAt, member.deviceMotion) : null;
-        var journeyState = sharing && member.journeyEnabled ? journeyState(member) : null;
+        var journeyState = showStored && (administrator || member.journeyEnabled) ? journeyState(member) : null;
         JourneyStatus journey = journeyState != null && now - journeyState.lastAt() <= 240_000
                 && (journeyState.stopped() || journeyState.inTrip())
                 ? new JourneyStatus(journeyState.stopped() ? "STOPPED" : "TRAVELLING",
                         journeyState.anchor().at(), journeyState.lastAt()) : null;
-        ScreenStatus screen = sharing && member.liveScreenEnabled && member.liveScreenAt != null
+        ScreenStatus screen = showStored && (administrator || member.liveScreenEnabled) && member.liveScreenAt != null
                 ? new ScreenStatus(ScreenState.valueOf(member.liveScreenState), member.liveScreenAt) : null;
         return new Status(member.displayName, sharing, latest == null ? null : point(latest),
-                sharing && member.usageEnabled ? member.screenMinutes : null,
-                sharing && member.usageEnabled ? member.screenDate : null, member.usageEnabled,
+                showStored && (administrator || member.usageEnabled) ? member.screenMinutes : null,
+                showStored && (administrator || member.usageEnabled) ? member.screenDate : null, member.usageEnabled,
                 member.appUsageEnabled, member.deviceStatusEnabled, device,
                 member.journeyEnabled, journey, member.liveScreenEnabled, screen, member.locationUnavailable);
     }
 
     private PositionSample lastPoint(Member member, long now) {
-        List<PositionSample> latest = samples.selectList(query(member).ge("recorded_at", now - RETENTION)
+        return latestPoint(query(member), now);
+    }
+
+    private PositionSample latestPoint(QueryWrapper<PositionSample> query, long now) {
+        List<PositionSample> latest = samples.selectList(query.ge("recorded_at", now - RETENTION)
                 .orderByDesc("recorded_at", "id").last("LIMIT 1"));
         return latest.isEmpty() ? null : latest.getFirst();
     }
@@ -849,7 +863,7 @@ class SharingService {
                 .set("sharing", false).set("share_key", null).set("location_unavailable", false)
                 .set("usage_enabled", false).set("screen_minutes", null).set("screen_date", null)
                 .set("app_usage_enabled", false).set("device_status_enabled", false)
-                .set("admin_location_allowed", false).set("journey_enabled", false).set("live_screen_enabled", false));
+                .set("journey_enabled", false).set("live_screen_enabled", false));
         clearInsights(member.id);
     }
 

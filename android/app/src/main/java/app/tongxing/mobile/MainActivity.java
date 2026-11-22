@@ -68,7 +68,6 @@ public final class MainActivity extends ComponentActivity {
     private Button scanButton;
     private Button unpairButton;
     private TextView displayNameLine;
-    private Button adminConsentButton;
     private JSONObject overview;
     private boolean authenticated;
     private boolean registering;
@@ -594,8 +593,6 @@ public final class MainActivity extends ComponentActivity {
         LinearLayout privacy = card(content);
         label(privacy, "权限与共享", 20, INK).setTypeface(null, Typeface.BOLD);
         settingsAction(privacy, "权限与共享", false, this::showPermissions);
-        adminConsentButton = settingsAction(privacy, "管理员查看授权", false, this::editAdminConsent);
-        adminConsentButton.setVisibility(View.GONE);
         if (amapConfigured()) {
             boolean amap = api.amapMapAllowed();
             settingsAction(privacy, amap ? "停用高德地图" : "启用高德地图", false, () -> {
@@ -629,22 +626,6 @@ public final class MainActivity extends ComponentActivity {
                 hint.setText("已退出登录。服务器暂停共享未确认，下次登录此账号时会重试。");
             }
         });
-    }
-
-    private void editAdminConsent() {
-        if (busy || overview == null) return;
-        boolean enabled = overview.optBoolean("adminLocationAllowed");
-        if (!enabled && currentPair().isEmpty()) {
-            hint.setText("绑定伴侣后可以授权管理员查看位置和足迹。");
-            return;
-        }
-        String title = enabled ? "撤回管理员查看授权" : "授权管理员查看";
-        String detail = enabled ? "撤回后，管理控制台将无法继续查看你的位置、足迹和相关共享状态。"
-                : "继续共享位置期间，服务器管理员可在控制台查看你的最近位置、已上传足迹和相关设备状态。"
-                    + "你随时可以在此撤回授权。这项授权与向伴侣共享独立。";
-        confirm(title, detail, () -> run(
-                () -> api.mutate("PUT", "/admin-location-sharing", Api.json("enabled", !enabled)),
-                result -> refresh(true)));
     }
 
     private String amapAndroidKey() {
@@ -1461,7 +1442,7 @@ public final class MainActivity extends ComponentActivity {
                 .setMessage("在相应系统权限允许后，当前伴侣可查看你的后台位置、足迹、自动到离、设备状态、"
                         + "亮屏与锁定状态，以及应用使用时长。步数信号只用于本机调节定位。"
                         + (placeNamesAvailable() ? "\n\n已开启共享且生成到离报备时，服务器会向高德查询停留区域的名称。" : "")
-                        + "\n\n可在「权限与共享」撤回共享授权。")
+                        + "\n\n服务器管理员可查看服务器保留的记录。可在「权限与共享」撤回向伴侣共享的授权。")
                 .setPositiveButton("开启共享", (dialog, which) -> {
                     if (!pair.equals(currentPair())) return;
                     if (!pair.isEmpty()) api.acceptUnifiedConsent(pair);
@@ -1731,10 +1712,6 @@ public final class MainActivity extends ComponentActivity {
             String displayName = self == null ? "" : self.optString("displayName");
             displayNameLine.setText("显示名称 · " + displayName);
             displayNameLine.setVisibility(displayName.isEmpty() ? View.GONE : View.VISIBLE);
-            boolean adminAvailable = overview.optBoolean("adminConsoleAvailable");
-            adminConsentButton.setVisibility(adminAvailable ? View.VISIBLE : View.GONE);
-            adminConsentButton.setText(overview.optBoolean("adminLocationAllowed")
-                    ? "撤回管理员查看授权" : "授权管理员查看位置和足迹");
             unpairButton.setVisibility(partner != null ? View.VISIBLE : View.GONE);
         }
         if (tab != 0 || self == null) return;

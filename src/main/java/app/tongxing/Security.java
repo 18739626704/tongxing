@@ -21,7 +21,6 @@ import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.factory.PasswordEncoderFactories;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.logout.LogoutFilter;
 import org.springframework.security.web.authentication.logout.SecurityContextLogoutHandler;
@@ -45,7 +44,7 @@ class Security {
                         .requestMatchers("/admin", "/admin/", "/admin/index.html", "/admin/admin.css",
                                 "/admin/admin.js", "/admin/csrf", "/admin/login").permitAll()
                         .anyRequest().hasRole("ADMIN"))
-                .addFilterBefore(new AdminSessionCheck(admin), UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new AdminSessionCheck(admin), LogoutFilter.class)
                 .headers(headers -> headers.contentSecurityPolicy(policy -> policy.policyDirectives(
                         "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")));
         return sessionEndpoints(http, "/admin").build();
@@ -94,11 +93,6 @@ class Security {
         @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                                   FilterChain chain) throws ServletException, IOException {
             String path = request.getServletPath();
-            if ("/admin/login".equals(path) && "POST".equals(request.getMethod())
-                    && !admin.acceptsBootstrapCode(request.getParameter("setupCode"))) {
-                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                return;
-            }
             var authentication = SecurityContextHolder.getContext().getAuthentication();
             if (path.startsWith("/admin/api/") && authentication != null
                     && authentication.getPrincipal() instanceof AdminAccess.Principal principal) {
