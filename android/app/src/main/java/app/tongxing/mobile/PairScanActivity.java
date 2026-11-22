@@ -1,8 +1,5 @@
 package app.tongxing.mobile;
 
-import android.Manifest;
-import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
@@ -10,7 +7,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.os.Build;
-import android.os.Bundle;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.Gravity;
@@ -19,24 +15,16 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import com.google.zxing.BarcodeFormat;
-import com.journeyapps.barcodescanner.BarcodeView;
+import com.journeyapps.barcodescanner.CaptureActivity;
+import com.journeyapps.barcodescanner.DecoratedBarcodeView;
 import com.journeyapps.barcodescanner.CameraPreview;
-import com.journeyapps.barcodescanner.DefaultDecoderFactory;
 import com.journeyapps.barcodescanner.Size;
-import java.util.List;
 
-public final class PairScanActivity extends Activity {
-    static final String CODE = "pair_code";
+public final class PairScanActivity extends CaptureActivity {
     static final String MANUAL = "pair_manual";
-    private static final int CAMERA_PERMISSION = 1;
-    private BarcodeView preview;
-    private TextView status;
-    private boolean torch;
-    private boolean completed;
 
-    @Override protected void onCreate(Bundle state) {
-        super.onCreate(state);
+    @Override protected DecoratedBarcodeView initializeContent() {
+        getWindow().getDecorView();
         getWindow().setStatusBarColor(0xff101b17);
         getWindow().setNavigationBarColor(0xff101b17);
         if (Build.VERSION.SDK_INT >= 30) {
@@ -51,12 +39,14 @@ public final class PairScanActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(0xff101b17);
         setContentView(root);
-        preview = new BarcodeView(this);
-        int size = Math.min(dp(266), getResources().getDisplayMetrics().widthPixels - dp(56));
-        size = Math.max(dp(120), size);
+        var scanner = new DecoratedBarcodeView(this);
+        var preview = scanner.getBarcodeView();
+        int size = Math.max(dp(120), Math.min(dp(266), getResources().getDisplayMetrics().widthPixels - dp(56)));
         preview.setFramingRectSize(new Size(size, size));
-        preview.setDecoderFactory(new DefaultDecoderFactory(List.of(BarcodeFormat.QR_CODE)));
-        root.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+        scanner.getViewFinder().setLaserVisibility(false);
+        scanner.getViewFinder().setVisibility(View.GONE);
+        if (scanner.getStatusView() != null) scanner.getStatusView().setVisibility(View.GONE);
+        root.addView(scanner, new FrameLayout.LayoutParams(-1, -1));
         View frame = new View(this) {
             private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             @Override protected void onDraw(Canvas canvas) {
@@ -85,20 +75,7 @@ public final class PairScanActivity extends Activity {
             @Override public void previewStarted() { frame.invalidate(); }
             @Override public void previewStopped() {}
             @Override public void cameraClosed() {}
-            @Override public void cameraError(Exception error) {
-                status.setText("相机无法打开，可以手动输入邀请码");
-            }
-        });
-        preview.decodeContinuous(result -> {
-            if (completed) return;
-            String code = PairQr.scan(result.getText());
-            if (code.isEmpty()) {
-                status.setText("请扫描同行生成的绑定二维码");
-                return;
-            }
-            completed = true;
-            setResult(RESULT_OK, new Intent().putExtra(CODE, code));
-            finish();
+            @Override public void cameraError(Exception error) {}
         });
 
         LinearLayout header = new LinearLayout(this);
@@ -115,7 +92,7 @@ public final class PairScanActivity extends Activity {
         footer.setOrientation(LinearLayout.VERTICAL);
         footer.setGravity(Gravity.CENTER);
         footer.setPadding(dp(18), dp(15), dp(18), dp(24));
-        status = text("将同行绑定二维码放入取景框", 15);
+        TextView status = text("将同行绑定二维码放入取景框", 15);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         footer.addView(status, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout actions = new LinearLayout(this);
@@ -123,11 +100,14 @@ public final class PairScanActivity extends Activity {
         footer.addView(actions);
         if (getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_FLASH)) {
             Button flash = button(actions, "开手电筒", null);
+            scanner.setTorchListener(new DecoratedBarcodeView.TorchListener() {
+                @Override public void onTorchOn() { flash.setText("关手电筒"); }
+                @Override public void onTorchOff() { flash.setText("开手电筒"); }
+            });
             flash.setOnClickListener(view -> {
                 if (!preview.isPreviewActive()) return;
-                torch = !torch;
-                preview.setTorch(torch);
-                flash.setText(torch ? "关手电筒" : "开手电筒");
+                if ("开手电筒".contentEquals(flash.getText())) scanner.setTorchOn();
+                else scanner.setTorchOff();
             });
         }
         button(actions, "手动输入", () -> {
@@ -145,34 +125,7 @@ public final class PairScanActivity extends Activity {
             root.requestApplyInsets();
         }
 
-        if (!cameraAllowed()) requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION);
-    }
-
-    private boolean cameraAllowed() {
-        return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    @Override protected void onResume() {
-        super.onResume();
-        if (cameraAllowed()) startPreview();
-    }
-
-    @SuppressLint("MissingPermission")
-    private void startPreview() {
-        preview.resume();
-        if (torch) preview.setTorch(true);
-    }
-
-    @Override protected void onPause() {
-        preview.pause();
-        super.onPause();
-    }
-
-    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
-        super.onRequestPermissionsResult(request, permissions, results);
-        if (request != CAMERA_PERMISSION) return;
-        if (cameraAllowed()) startPreview();
-        else status.setText("未授权相机，可以手动输入邀请码");
+        return scanner;
     }
 
     private TextView text(String value, int size) {

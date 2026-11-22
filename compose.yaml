@@ -28,7 +28,7 @@ services:
       AMAP_WEB_SERVICE_KEY: ${AMAP_WEB_SERVICE_KEY:-}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
-      ADMIN_BOOTSTRAP_CODE: ${ADMIN_BOOTSTRAP_CODE:-}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy

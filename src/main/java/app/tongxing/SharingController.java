@@ -42,9 +42,7 @@ class SharingController {
     record AppUsageReport(@NotNull UUID shareKey, @NotNull java.time.LocalDate date, @NotNull Long recordedAt,
                           @NotNull @Size(max = 200) List<@NotNull @Valid AppDuration> apps) {}
     record AppUsageSnapshot(String date, long recordedAt, List<AppDuration> apps) {}
-    record Overview(Status self, Status partner, long serverTime, String pairId, MapConfig mapConfig,
-                    boolean adminConsoleAvailable, boolean adminLocationAllowed) {}
-    record AdminLocationConsent(@NotNull Boolean enabled) {}
+    record Overview(Status self, Status partner, long serverTime, String pairId, MapConfig mapConfig) {}
     record MapConfig(String amapAndroidKey, boolean placeNamesAvailable) {}
     record ShareState(String shareKey) {}
     record InviteCode(String code, long expiresAt) {}
@@ -89,12 +87,6 @@ class SharingController {
 
     @GetMapping("/overview")
     Overview overview(Principal user) { return sharing.overview(user.getName()); }
-
-    @PutMapping("/admin-location-sharing")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    void adminLocationSharing(Principal user, @Valid @RequestBody AdminLocationConsent consent) {
-        sharing.adminLocationConsent(user.getName(), consent.enabled());
-    }
 
     @PostMapping("/invite")
     InviteCode invite(Principal user) { return sharing.invite(user.getName()); }
