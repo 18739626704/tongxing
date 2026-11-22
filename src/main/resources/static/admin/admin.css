@@ -89,6 +89,7 @@ label input { font-weight: 400; color: var(--ink); }
 .person-name { flex: 1; min-width: 0; }
 .person-name h2 { font-size: 23px; }
 .person-name p { margin-top: 3px; font-size: 13px; overflow-wrap: anywhere; }
+.person-name p:empty { display: none; }
 .detail-tabs { display: flex; gap: 4px; padding: 0 17px; border-bottom: 1px solid var(--line); }
 .detail-tabs button { border: 0; border-radius: 9px 9px 0 0; background: transparent; padding-inline: 13px; color: var(--muted); }
 .detail-tabs button[aria-pressed="true"] { background: var(--wash); color: var(--green-deep); font-weight: 710; }
@@ -150,4 +151,30 @@ tbody tr:last-child td { border-bottom: 0; }
   .account-section { flex-wrap: wrap; }
   .signin { padding: 24px; }
   th, td { padding: 9px 8px; }
+}
+
+.route-form { justify-content: space-between; }
+.day-controls { display: flex; gap: 8px; }
+.route-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.route-summary div { padding: 9px 10px; background: var(--wash); border-radius: 9px; font-size: 13px; }
+.route-summary dd { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.route-map-card { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; }
+#route-map { height: clamp(310px, 52vh, 570px); isolation: isolate; background: #edf4ef; }
+.map-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 9px; }
+.map-footer p { font-size: 13px; }
+.map-footer button { min-height: 36px; margin-inline-start: auto; }
+#show-recent-route { margin-bottom: 10px; }
+#route-table .table-scroll { margin-top: 10px; }
+.audit-form { padding: 4px 5px 12px; }
+.audit-form label { min-width: 0; }
+.audit-form input { min-width: 0; }
+@media (max-width: 720px) {
+  .route-form label, .audit-form label { flex: 1 1 44%; }
+  .route-form input, .audit-form input { width: 100%; font-size: 16px; }
+  .route-form button { padding-inline: 9px; min-height: 44px; }
+  .route-form input { min-height: 44px; }
+  #route-map { height: clamp(280px, 46vh, 420px); }
+  .route-summary dd { font-size: 15px; }
+  .audit-form button { flex: 1; min-height: 44px; }
+  .audit td:first-child { font-size: 12px; max-width: 100px; }
 }

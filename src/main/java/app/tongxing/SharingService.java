@@ -295,11 +295,19 @@ class SharingService {
         audit(disabled ? "DISABLE_ACCOUNT" : "ENABLE_ACCOUNT", id);
     }
 
-    public List<AuditEntry> adminAudit() {
+    public List<AuditEntry> adminAudit(String username, Long from, Long to) {
+        if (from != null || to != null) {
+            if (from == null || to == null) throw failure(HttpStatus.BAD_REQUEST, "请选择完整日期");
+            validateRouteRange(from, to);
+        }
         return jdbc.query("""
-                SELECT action, target_id, occurred_at FROM admin_audit ORDER BY id DESC LIMIT 100
+                SELECT audit.action, audit.target_id, member.username, audit.occurred_at
+                FROM admin_audit audit LEFT JOIN member ON member.id = audit.target_id
+                WHERE (? = '' OR member.username = ?) AND audit.occurred_at >= ? AND audit.occurred_at < ?
+                ORDER BY audit.id DESC LIMIT 100
                 """, (row, index) -> new AuditEntry(row.getString("action"), row.getString("target_id"),
-                row.getLong("occurred_at")));
+                row.getString("username"), row.getLong("occurred_at")),
+                username, username, from == null ? 0L : from, to == null ? Long.MAX_VALUE : to);
     }
 
     private void audit(String action, String id) {

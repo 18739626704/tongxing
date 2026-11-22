@@ -26,7 +26,7 @@ class AdminController {
     record AccountState(@NotNull Boolean disabled) {}
     record PasswordChange(@NotNull @Size(max = 128) String currentPassword,
                           @NotNull @Size(max = 64) String newPassword) {}
-    record AuditEntry(String action, String targetId, long occurredAt) {}
+    record AuditEntry(String action, String targetId, String username, long occurredAt) {}
 
     private final SharingService sharing;
     private final AdminAccess admin;
@@ -101,5 +101,8 @@ class AdminController {
 
     @GetMapping("/api/audit")
     @ResponseBody
-    List<AuditEntry> audit() { return sharing.adminAudit(); }
+    List<AuditEntry> audit(@RequestParam(defaultValue = "") @Size(max = 32) String username,
+                           @RequestParam(required = false) Long from, @RequestParam(required = false) Long to) {
+        return sharing.adminAudit(username.strip(), from, to);
+    }
 }

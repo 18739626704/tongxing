@@ -524,13 +524,13 @@ public final class MainActivity extends ComponentActivity {
             if (!busy && !partnerRoute) changeRoute(true, daysBack);
         });
         var selectedDay = java.time.LocalDate.now().minusDays(daysBack);
-        String date = selectedDay.format(java.time.format.DateTimeFormatter.ofPattern("MM月dd日", Locale.CHINA));
+        String date = selectedDay.format(java.time.format.DateTimeFormatter.ofPattern("M月d日 · E", Locale.CHINA));
         LinearLayout dates = row(panel);
         Button earlier = button(dates, "前一天", false, () -> {
             if (!busy && daysBack < 30) changeRoute(partnerRoute, daysBack + 1);
         });
         Button dateButton = button(dates, daysBack == 0 ? "今天" : date, false, () -> pickRouteDay(selectedDay));
-        dateButton.setContentDescription("选择足迹日期");
+        dateButton.setContentDescription("选择足迹日期，当前为" + date);
         Button later = button(dates, "后一天", false, () -> {
             if (!busy && daysBack > 0) changeRoute(partnerRoute, daysBack - 1);
         });
@@ -551,7 +551,8 @@ public final class MainActivity extends ComponentActivity {
         displayedRoute = null;
         var routeActions = row(summary);
         timelineButton = button(routeActions, "查看时间轴", false, this::showRouteTimeline);
-        button(routeActions, "刷新足迹", false, () -> refresh(true));
+        var refreshRoute = button(routeActions, "刷新", false, () -> refresh(true));
+        refreshRoute.setContentDescription("刷新足迹");
         timelineButton.setCompoundDrawables(icon(7, ACCENT), null, null, null);
         timelineButton.setCompoundDrawablePadding(dp(7));
         timelineButton.setEnabled(false);
