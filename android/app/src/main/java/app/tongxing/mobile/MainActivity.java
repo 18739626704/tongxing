@@ -80,7 +80,8 @@ public final class MainActivity extends ComponentActivity {
     private int accountGeneration;
     private int daysBack;
     private boolean partnerRoute = true;
-    private boolean collapsed;
+    private boolean collapsed = true;
+    private boolean partnerFocus;
     private JSONObject routeHighlight;
     private JSONObject sosPoint;
     private String sosPair;
@@ -97,7 +98,6 @@ public final class MainActivity extends ComponentActivity {
     private TextView permissionsChip;
     private AlertDialog permissionDialog;
     private AlertDialog mapPrivacyDialog;
-    private boolean mapPrivacyShown;
     private LinearLayout permissionRows;
     private TextView partnerAvatar;
     private TextView partnerDeviceLine;
@@ -398,9 +398,10 @@ public final class MainActivity extends ComponentActivity {
         if (sosPoint != null) mapDock.setVisibility(View.GONE);
         LinearLayout tools = row(mapDock);
         tools.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        floatingButton(tools, "回中心", 5, () -> {
+        floatingButton(tools, "看双方", 5, () -> {
+            partnerFocus = false;
             if (overview != null) updateOverview(true);
-            refresh(true);
+            refresh(false);
         });
 
         LinearLayout sheet = card(mapDock);
@@ -426,8 +427,8 @@ public final class MainActivity extends ComponentActivity {
         var avatarSize = new LinearLayout.LayoutParams(dp(avatarEdge), dp(avatarEdge));
         avatarSize.rightMargin = dp(narrow ? 8 : 12);
         partnerAvatar.setLayoutParams(avatarSize);
-        partnerAvatar.setOnClickListener(view -> showPartnerUsage());
-        partnerAvatar.setContentDescription("查看伴侣应用时长");
+        partnerAvatar.setOnClickListener(view -> focusPartner());
+        partnerAvatar.setContentDescription("定位到伴侣");
         var identity = new LinearLayout(this);
         identity.setOrientation(LinearLayout.VERTICAL);
         identity.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
@@ -442,7 +443,8 @@ public final class MainActivity extends ComponentActivity {
         partnerScreenLine.setCompoundDrawables(icon(6, ACCENT), null, null, null);
         partnerScreenLine.setCompoundDrawablePadding(dp(4));
         partnerLine.setTypeface(null, Typeface.BOLD);
-        partnerLine.setOnClickListener(view -> showPartnerUsage());
+        partnerLine.setOnClickListener(view -> focusPartner());
+        partnerSyncLine.setOnClickListener(view -> focusPartner());
 
         Button expand = button(overviewRow, collapsed ? "展开" : "收起", false, () -> {});
         expand.setLayoutParams(new LinearLayout.LayoutParams(dp(52), dp(44)));
@@ -611,10 +613,23 @@ public final class MainActivity extends ComponentActivity {
                 else showAmapConsent();
             });
         }
+        if (placeNamesAvailable()) {
+            boolean enabled = api.amapPlaceNames();
+            settingsAction(privacy, enabled ? "停用高德地点名称" : "启用高德地点名称", false, () -> {
+                if (enabled) {
+                    api.allowAmapPlaceNames(false);
+                    render();
+                } else {
+                    confirm("启用高德地点名称", "开启后，生成到离报备时会将停留区域的坐标发送给高德查询地点名称。",
+                            () -> { api.allowAmapPlaceNames(true); render(); });
+                }
+            });
+        }
         settingsAction(privacy, "紧急联系人", false, this::editEmergencyContact);
         settingsAction(privacy, "常去地点与到达提醒", false, this::showSavedPlaces);
         LinearLayout account = card(content);
         label(account, "账号与数据", 20, INK).setTypeface(null, Typeface.BOLD);
+        settingsAction(account, "修改密码", false, this::changePassword);
         settingsAction(account, "退出登录", false, this::logout);
         settingsAction(account, "注销账号", true, this::deleteAccount);
         hint = label(content, "", 14, MUTED);
@@ -662,16 +677,8 @@ public final class MainActivity extends ComponentActivity {
         return AmapMap.available() && !amapAndroidKey().isEmpty();
     }
 
-    private void maybeShowAmapConsent() {
-        if (resumed && !isFinishing() && mapFrame != null && permissionDialog == null
-                && !mapPrivacyShown && !api.amapMapChoiceMade() && amapConfigured()) {
-            showAmapConsent();
-        }
-    }
-
     private void showAmapConsent() {
         if (mapPrivacyDialog != null || !amapConfigured()) return;
-        mapPrivacyShown = true;
         mapPrivacyDialog = new AlertDialog.Builder(this).setTitle("高德地图隐私确认")
                 .setMessage("高德 SDK 用于显示地图，会按其隐私政策处理设备、网络和位置相关信息。"
                         + "同意后自动使用高德底图，可在设置中随时停用。此选择与向伴侣共享位置独立。")
@@ -695,10 +702,6 @@ public final class MainActivity extends ComponentActivity {
         makeMap();
         mapData = previousMapData;
         sendMapData();
-    }
-
-    private boolean mapServicesPending() {
-        return !currentPair().isEmpty() && placeNamesAvailable() && !api.amapPlaceNames();
     }
 
     private record PermissionRow(String label, boolean allowed, Runnable open) {}
@@ -782,10 +785,8 @@ public final class MainActivity extends ComponentActivity {
     private void updatePermissionChip() {
         if (permissionsChip != null) {
             long missing = systemPermissions().stream().filter(row -> !row.allowed()).count();
-            String pair = currentPair();
-            boolean needsConfirm = mapServicesPending() || (!pair.isEmpty() && !api.unifiedConsentAccepted(pair));
-            permissionsChip.setVisibility(!needsConfirm && missing == 0 ? View.GONE : View.VISIBLE);
-            permissionsChip.setText(needsConfirm ? "确认权限与共享" : "待设置 " + missing + " 项");
+            permissionsChip.setVisibility(missing == 0 ? View.GONE : View.VISIBLE);
+            permissionsChip.setText("待设置 " + missing + " 项");
         }
         if (permissionDialog != null && permissionDialog.isShowing()) renderPermissionCenter();
     }
@@ -814,18 +815,12 @@ public final class MainActivity extends ComponentActivity {
     private void renderPermissionCenter() {
         permissionRows.removeAllViews();
         String pair = currentPair();
-        boolean confirmed = api.unifiedConsentAccepted(pair);
         JSONObject self = overview == null ? null : overview.optJSONObject("self");
         var items = systemPermissions();
-        label(permissionRows, pair.isEmpty() ? "绑定伴侣后可确认共享范围。"
-                : confirmed ? "已确认共享范围，权限就绪后功能自动运行。"
-                : "确认一次共享范围，之后按系统权限自动运行。", 15, INK);
+        label(permissionRows, pair.isEmpty() ? "绑定后会按系统权限自动向伴侣共享。"
+                : "已绑定。手机权限就绪后自动共享。", 15, INK);
         PermissionRow next = items.stream().filter(row -> !row.allowed()).findFirst().orElse(null);
-        if (mapServicesPending() || (!pair.isEmpty() && !confirmed)) {
-            button(permissionRows, "确认权限与共享", true, () -> showSharingSetup(pair));
-        } else if (next != null) {
-            button(permissionRows, "继续开通 · " + next.label(), true, next.open());
-        }
+        if (next != null) button(permissionRows, "继续开通 · " + next.label(), true, next.open());
         label(permissionRows, "系统权限", 16, INK).setTypeface(null, Typeface.BOLD);
         for (PermissionRow item : items) {
             if (item.allowed()) label(permissionRows, item.label() + "  ·  已允许", 14, ACCENT);
@@ -839,7 +834,7 @@ public final class MainActivity extends ComponentActivity {
         settingsAction(permissionRows, "系统消息横幅设置", false, () -> openSettings(
                 CompanionNotifications.channelSettings(this)));
         label(permissionRows, "同行功能", 16, INK).setTypeface(null, Typeface.BOLD);
-        String pending = pair.isEmpty() ? "待绑定" : !confirmed ? "待确认共享范围"
+        String pending = pair.isEmpty() ? "待绑定" : api.sharingNeedsReview() ? "已暂停共享"
                 : !hasLocationPermission() || !systemLocationEnabled() ? "待定位权限"
                 : "正在同步设置";
         label(permissionRows, "位置与足迹  ·  " + (serverSharing() && hasLocationPermission() && systemLocationEnabled() ? "已启用" : pending), 14, MUTED);
@@ -847,8 +842,9 @@ public final class MainActivity extends ComponentActivity {
         label(permissionRows, "伴侣屏幕状态  ·  " + featureStatus(self, "liveScreenEnabled", pending), 14, MUTED);
         label(permissionRows, "应用使用明细  ·  " + (!ScreenTime.allowed(this) ? "待使用情况访问"
                 : featureStatus(self, "appUsageEnabled", pending)), 14, MUTED);
-        if (api.sharingSetupAccepted(pair) || serverSharing()) {
-            settingsAction(permissionRows, "撤回共享授权", true, this::manageSharingConsent);
+        if (!pair.isEmpty()) {
+            settingsAction(permissionRows, api.sharingNeedsReview() ? "恢复共享" : "暂停共享",
+                    !api.sharingNeedsReview(), this::toggleSharing);
         }
         label(permissionRows, "iQOO / vivo 如仍限制后台运行，在电池或 i 管家允许同行后台耗电和自启动。", 13, MUTED);
     }
@@ -1313,6 +1309,63 @@ public final class MainActivity extends ComponentActivity {
         return label;
     }
 
+    private void changePassword() {
+        if (busy) return;
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(20), dp(4), dp(20), dp(12));
+        int input = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
+        EditText current = field(form, "当前密码", input);
+        current.setAutofillHints(View.AUTOFILL_HINT_PASSWORD);
+        EditText replacement = field(form, "新密码 · 10–64 个字符", input);
+        replacement.setAutofillHints("newPassword");
+        EditText confirmation = field(form, "再输入一次新密码", input);
+        TextView error = label(form, "", 14, MUTED);
+        error.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("修改密码")
+                .setMessage("保存后，已登录的设备需要用新密码重新登录。")
+                .setView(form).setNegativeButton("取消", null).setPositiveButton("保存", null).create();
+        dialog.show();
+        Button save = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        save.setOnClickListener(view -> {
+            String old = current.getText().toString();
+            String next = replacement.getText().toString();
+            error.setText("");
+            if (old.isBlank()) {
+                current.setError("请输入当前密码");
+                return;
+            }
+            if (next.isBlank() || next.length() < 10 || next.length() > 64
+                    || next.getBytes(StandardCharsets.UTF_8).length > 72 || old.equals(next)) {
+                replacement.setError(old.equals(next) ? "新密码须与当前密码不同"
+                        : "新密码须为 10–64 个字符，且不超过 72 字节");
+                return;
+            }
+            if (!next.contentEquals(confirmation.getText())) {
+                confirmation.setError("两次输入的新密码不一致");
+                return;
+            }
+            save.setEnabled(false);
+            dialog.setCancelable(false);
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
+            execute(() -> api.mutate("PUT", "/account/password", Api.json("currentPassword", old, "newPassword", next)), result -> {
+                dialog.dismiss();
+                api.clearSession();
+                signedOut("密码已修改，请用新密码重新登录。");
+            }, failure -> {
+                save.setEnabled(true);
+                dialog.setCancelable(true);
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(true);
+                if (failure instanceof Api.Failure denied && denied.status == 401) {
+                    dialog.dismiss();
+                    showError(failure);
+                } else {
+                    error.setText(failure instanceof Api.Failure ? failure.getMessage() : "无法连接服务器，请稍后重试。");
+                }
+            });
+        });
+    }
+
     private void deleteAccount() {
         EditText password = new EditText(this);
         password.setSingleLine();
@@ -1353,6 +1406,7 @@ public final class MainActivity extends ComponentActivity {
             String expiry = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
                     .format(new java.util.Date(result.optLong("expiresAt")));
             label(body, "请让伴侣在同行中扫码或输入邀请码。仅限同一服务器，" + expiry + " 到期。", 14, MUTED);
+            label(body, "绑定后会按手机权限自动共享位置、足迹和设备状态。开放使用情况访问时也会共享使用时长。", 13, MUTED);
             new AlertDialog.Builder(this).setTitle("绑定二维码").setView(body)
                     .setPositiveButton("复制邀请码", (dialog, which) -> getSystemService(ClipboardManager.class)
                             .setPrimaryClip(ClipData.newPlainText("同行邀请码", code)))
@@ -1380,7 +1434,7 @@ public final class MainActivity extends ComponentActivity {
         code.setHint("输入 16 位邀请码");
         code.setText(scannedCode);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("接受绑定").setView(code)
-                .setMessage("请确认你和伴侣登录的是同一台服务器。绑定后，你们分别决定是否开始共享位置。")
+                .setMessage("请确认你和伴侣登录的是同一台服务器。绑定后，双方会按手机权限自动共享位置、足迹和设备状态。开放使用情况访问时也会共享使用时长。")
                 .setPositiveButton("绑定", null).setNegativeButton("取消", null).show();
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             String accepted = PairQr.code(code.getText().toString());
@@ -1428,44 +1482,23 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
-    private void manageSharingConsent() {
-        if (busy) return;
-        String pair = currentPair();
-        if (pair.isEmpty()) {
-            if (hint != null) hint.setText("请先绑定伴侣");
+    private void toggleSharing() {
+        if (busy || currentPair().isEmpty()) return;
+        if (api.sharingNeedsReview()) {
+            api.resumeAutomaticSharing();
+            nextSharingAttempt = 0;
+            updatePermissionChip();
+            maybeResumeSharing();
+            refresh(false);
             return;
         }
-        if (!api.sharingSetupAccepted(pair) && !serverSharing()) {
-            showSharingSetup(pair);
-            return;
-        }
-        confirm("撤回共享授权", "将停止本机采集，对方将无法查看你的位置和足迹。重新授权前不会自动共享。", () -> {
-            api.withdrawSharing();
-            stopLocalSharing();
-            run(() -> { api.stopSharing(); return null; }, ignored -> refresh(true));
-        });
+        api.withdrawSharing();
+        stopLocalSharing();
+        run(() -> { api.stopSharing(); return null; }, ignored -> refresh(false));
     }
 
     private String currentPair() {
         return overview == null || overview.isNull("pairId") ? "" : overview.optString("pairId");
-    }
-
-    private void showSharingSetup(String pair) {
-        new AlertDialog.Builder(this).setTitle("确认权限与共享")
-                .setMessage("在相应系统权限允许后，当前伴侣可查看你的后台位置、足迹、自动到离、设备状态、"
-                        + "亮屏与锁定状态，以及应用使用时长。步数信号只用于本机调节定位。"
-                        + (placeNamesAvailable() ? "\n\n已开启共享且生成到离报备时，服务器会向高德查询停留区域的名称。" : "")
-                        + "\n\n服务器管理员可查看服务器保留的记录。可在「权限与共享」撤回向伴侣共享的授权。")
-                .setPositiveButton("开启共享", (dialog, which) -> {
-                    if (!pair.equals(currentPair())) return;
-                    if (!pair.isEmpty()) api.acceptUnifiedConsent(pair);
-                    if (!pair.isEmpty() && placeNamesAvailable()) api.allowAmapPlaceNames(true);
-                    nextSharingAttempt = 0;
-                    maybeResumeSharing();
-                    showPermissions();
-                    updatePermissionChip();
-                    refresh(false);
-                }).setNegativeButton("暂不开启", null).show();
     }
 
     private boolean hasLocationPermission() {
@@ -1501,7 +1534,7 @@ public final class MainActivity extends ComponentActivity {
                 || api.pausePending() || api.sharingNeedsReview() || !hasLocationPermission() || !systemLocationEnabled()) return;
         boolean previouslySharing = serverSharing();
         String pair = currentPair();
-        if (!previouslySharing && !api.sharingSetupAccepted(pair)) return;
+        if (pair.isEmpty()) return;
         restoring = true;
         nextSharingAttempt = now + 10_000;
         String account = api.accountKey();
@@ -1513,7 +1546,7 @@ public final class MainActivity extends ComponentActivity {
         }, key -> {
             restoring = false;
             if (key != null && resumed && authenticated && !busy && account.equals(api.accountKey())
-                    && !api.pausePending() && !api.sharingNeedsReview() && !LocationSharing.running()) {
+                    && pair.equals(currentPair()) && !api.pausePending() && !api.sharingNeedsReview() && !LocationSharing.running()) {
                 startSharingService(key);
                 if (!previouslySharing) refresh(false);
             } else if (!resumed) nextSharingAttempt = 0;
@@ -1530,35 +1563,28 @@ public final class MainActivity extends ComponentActivity {
 
     private void checkSetup() {
         if (!resumed || isFinishing() || !authenticated || overview == null) return;
-        String pair = currentPair();
-        if (permissionPromptShown || (pair.isEmpty() && !mapServicesPending())) return;
-        if (api.sharingNeedsReview() && !api.consumeLegacyReview() && !mapServicesPending()) return;
-        if (mapServicesPending() || (!pair.isEmpty() && !api.unifiedConsentAccepted(pair))
-                || systemPermissions().stream().anyMatch(row -> !row.allowed())) {
-            showPermissions();
-        }
+        if (permissionPromptShown || currentPair().isEmpty() || api.sharingNeedsReview()) return;
+        if (!hasLocationPermission() || !systemLocationEnabled()) showPermissions();
     }
 
     private void syncInsightPermissions(JSONObject state, JSONObject self) throws Exception {
-        if (!self.optBoolean("sharing") || api.sharingNeedsReview() || state.isNull("pairId")
-                || !api.sharingSetupAccepted(state.optString("pairId"))) return;
+        if (!self.optBoolean("sharing") || api.sharingNeedsReview() || api.pausePending() || state.isNull("pairId")) return;
         boolean usage = ScreenTime.allowed(this);
         String pair = state.optString("pairId");
+        if (pair.isEmpty()) return;
         syncInsight(pair, "/usage-sharing", usage, api.usageEnabled(), api::cacheUsage);
         syncInsight(pair, "/app-usage-sharing", usage, api.appUsageEnabled(), api::cacheAppUsage);
         syncInsight(pair, "/device-status-sharing", true, api.deviceStatusEnabled(), api::cacheDeviceStatus);
-        if (api.unifiedConsentAccepted(pair)) {
-            if (syncInsight(pair, "/journey-sharing", true, self.optBoolean("journeyEnabled"), ignored -> {})) {
-                self.put("journeyEnabled", true);
-            }
-            if (syncInsight(pair, "/live-screen-sharing", true, self.optBoolean("liveScreenEnabled"), api::cacheLiveScreen)) {
-                self.put("liveScreenEnabled", true);
-            }
+        if (syncInsight(pair, "/journey-sharing", true, self.optBoolean("journeyEnabled"), ignored -> {})) {
+            self.put("journeyEnabled", true);
+        }
+        if (syncInsight(pair, "/live-screen-sharing", true, self.optBoolean("liveScreenEnabled"), api::cacheLiveScreen)) {
+            self.put("liveScreenEnabled", true);
         }
     }
 
     private boolean syncInsight(String pair, String path, boolean allowed, boolean current, Done<Boolean> cache) throws Exception {
-        if (allowed == current || api.sharingNeedsReview() || !api.sharingSetupAccepted(pair)) return false;
+        if (allowed == current || api.sharingNeedsReview() || api.pausePending()) return false;
         api.mutate("PUT", path, Api.json("enabled", allowed, "pairId", pair));
         cache.accept(allowed);
         return true;
@@ -1651,6 +1677,7 @@ public final class MainActivity extends ComponentActivity {
             String previousPair = currentPair();
             overview = state.overview;
             if (!previousPair.equals(currentPair())) {
+                partnerFocus = false;
                 routeHighlight = null;
                 displayedRoute = null;
             }
@@ -1670,7 +1697,6 @@ public final class MainActivity extends ComponentActivity {
             LiveWidget.update(this, overview);
             updateOverview(recenter);
             maybeResumeSharing();
-            maybeShowAmapConsent();
             if (mapPrivacyDialog == null) checkSetup();
             updatePermissionChip();
             if (page == 1) {
@@ -1734,8 +1760,7 @@ public final class MainActivity extends ComponentActivity {
             return;
         }
 
-        String screenTime = partner != null && !partner.isNull("screenMinutes")
-                ? "亮屏 " + partner.optInt("screenMinutes") + " 分钟" : "";
+        String screenTime = "";
         JSONObject device = partner == null ? null : partner.optJSONObject("device");
         if (device != null) {
             String model = device.optString("model", "");
@@ -1767,12 +1792,10 @@ public final class MainActivity extends ComponentActivity {
         if (partner == null) {
             hint.setText("绑定后会按权限自动同步");
         } else if (api.sharingNeedsReview()) {
-            hint.setText("共享授权待确认，可点右上角「权限与共享」");
+            hint.setText("已暂停共享 · 点击恢复");
+            hint.setOnClickListener(view -> toggleSharing());
         } else if (api.pausePending()) {
-            hint.setText("正在同步状态，完成后会按权限恢复");
-        } else if (!serverSharing() && !api.sharingSetupAccepted(currentPair())) {
-            hint.setText("请在「权限与共享」确认共享范围");
-            hint.setOnClickListener(view -> showPermissions());
+            hint.setText("正在同步暂停状态");
         } else if (!hasLocationPermission() || !systemLocationEnabled()) {
             hint.setText("位置权限未就绪，点右上角「权限」");
             hint.setOnClickListener(view -> showPermissions());
@@ -1800,9 +1823,21 @@ public final class MainActivity extends ComponentActivity {
         }
         hint.setVisibility(hint.length() == 0 ? View.GONE : View.VISIBLE);
         JSONArray points = new JSONArray();
-        if (first != null) points.put(drawPoint(first, "我", false, !fresh(first, now)));
+        if (first != null && !partnerFocus) points.put(drawPoint(first, "我", false, !fresh(first, now)));
         if (second != null) points.put(drawPoint(second, placeName(second, partner.optString("displayName")), true, !fresh(second, now)));
-        updateMap(points, false, "live", recenter);
+        updateMap(points, false, partnerFocus ? "partner" : "live", recenter);
+    }
+
+    private void focusPartner() {
+        if (sosPoint != null) return;
+        JSONObject partner = overview == null ? null : overview.optJSONObject("partner");
+        if (partner == null || partner.optJSONObject("lastLocation") == null) {
+            android.widget.Toast.makeText(this, partner == null ? "请先绑定伴侣" : "对方暂无可显示的位置",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        partnerFocus = true;
+        updateOverview(true);
     }
 
     private void showRouteTimeline() {
@@ -2068,12 +2103,12 @@ public final class MainActivity extends ComponentActivity {
         stopPositionCollection();
         authenticated = false;
         if (mapPrivacyDialog != null) mapPrivacyDialog.dismiss();
-        mapPrivacyShown = false;
         LiveWidget.update(this, null);
         CompanionNotifications.cancel(this);
         feedCache = null;
         knownPlaces = new JSONArray();
         knownPlacesPair = "";
+        partnerFocus = false;
         registering = false;
         overview = null;
         sosPoint = null;

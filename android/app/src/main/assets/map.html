@@ -26,7 +26,7 @@
 <div id="map" aria-label="位置和轨迹地图"></div>
 <script src="leaflet.js"></script>
 <script>
-  const map = L.map('map', {zoomControl:false, attributionControl:false, minZoom:2, maxZoom:19}).setView([20, 0], 2);
+  const map = L.map('map', {zoomControl:false, attributionControl:false, minZoom:0, maxZoom:19}).setView([20, 0], 2);
   L.control.zoom({position:"topright"}).addTo(map);
   const overlays = L.layerGroup().addTo(map);
   L.control.attribution({position:'topleft', prefix:false}).addTo(map);
@@ -79,11 +79,45 @@
   let pointsShown = false;
   let lastHighlight = '';
 
+  let following = true;
+  let fitting = false;
+  let count = 0;
+  map.on('dragstart zoomstart', () => { if (!fitting) following = false; });
+
+  function wrapPoints(points) {
+    if (!points.length) return points;
+    const near = (longitude, reference) => longitude + 360 * Math.round((reference - longitude) / 360);
+    const first = near(points[0][1], map.getCenter().lng);
+    return points.map(([lat, lng]) => [lat, near(lng, first)]);
+  }
+
+  function cameraPadding(data) {
+    const cap = map.getSize().y / 2.5;
+    return [[30, Math.min(cap, (data.top || 8) + 26)], [30, Math.min(cap, (data.bottom || 28) + 22)]];
+  }
+
+  function outsideViewport(points, padding) {
+    const size = map.getSize();
+    return points.some(point => {
+      const pixel = map.latLngToContainerPoint(point);
+      return pixel.x < padding[0][0] || pixel.y < padding[0][1]
+        || pixel.x > size.x - padding[1][0] || pixel.y > size.y - padding[1][1];
+    });
+  }
+
+  function canZoomIn(points, padding) {
+    if (points.length < 2 || map.getZoom() > 17) return false;
+    const total = L.point(padding[0]).add(L.point(padding[1]));
+    return map.getBoundsZoom(L.latLngBounds(points), false, total) >= map.getZoom() + 2;
+  }
+
   window.updateMap = function(data) {
     for (const corner of document.querySelectorAll('.leaflet-top')) corner.style.top = (data.top || 0) + 'px';
     const hasData = data.points.length > 0;
     overlays.clearLayers();
-    const points = data.points.map(point => [point.latitude, point.longitude]);
+    const live = data.mode === 'live' || data.mode === 'partner';
+    const source = data.points.map(point => [point.latitude, point.longitude]);
+    const points = live ? wrapPoints(source) : source;
     if (data.route) {
       for (const [first, last] of data.paths) {
         const path = points.slice(first, last + 1);
@@ -111,7 +145,9 @@
       const marker = L.marker(points[index], {icon, alt:point.label || '位置'}).addTo(overlays);
       const label = document.createElement('span');
       label.textContent = point.label;
-      marker.bindTooltip(label, {direction:'top', permanent:true, offset:[0,-6]});
+      const overlap = live && points.length === 2 && map.distance(points[0], points[1]) < 35;
+      marker.bindTooltip(label, {direction:overlap ? (point.partner ? 'right' : 'left') : 'top',
+        permanent:true, offset:overlap ? [point.partner ? 8 : -8, -8] : [0,-6]});
     });
 
     const highlight = data.highlight;
@@ -131,11 +167,23 @@
       L.circleMarker(selected[0], {radius:9, color:'#fff', weight:3, fillColor:color, fillOpacity:1})
         .bindTooltip(highlight.label, {permanent:true, direction:'top'}).addTo(overlays);
     }
+    const modeChanged = data.mode !== lastMode;
+    if (modeChanged || data.recenter) following = true;
+    const padding = cameraPadding(data);
     if ((focus && (lastHighlight !== highlight.id || data.recenter)) ||
-        (!focus && hasData && (!pointsShown || data.mode !== lastMode || data.recenter))) {
-      map.fitBounds(focus ? selected : points, {paddingTopLeft:[28, Math.min(data.top || 8, map.getSize().y / 3) + 18],
-        paddingBottomRight:[28, Math.min(data.bottom || 40, map.getSize().y / 3) + 18], maxZoom:focus ? 17 : 16});
+        (!focus && hasData && (!pointsShown || modeChanged || data.recenter ||
+          (live && following && (points.length !== count || outsideViewport(points, padding)
+            || canZoomIn(points, padding)))))) {
+      const maxZoom = focus ? 17 : data.mode === 'partner' || (live && points.length > 1) ? 19 : 16;
+      fitting = true;
+      try {
+        map.fitBounds(focus ? selected : points, {paddingTopLeft:padding[0], paddingBottomRight:padding[1],
+          maxZoom, animate:false});
+      } finally {
+        fitting = false;
+      }
     }
+    count = points.length;
     lastHighlight = focus ? highlight.id : '';
     pointsShown = hasData;
     lastMode = data.mode;

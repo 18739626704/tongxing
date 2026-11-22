@@ -66,6 +66,8 @@ class SharingController {
     record Feed(String pairId, List<Event> events) {}
     record PushToken(@NotBlank @Size(max = 512) @Pattern(regexp = "[a-zA-Z0-9:_-]+") String token) {}
     record DeleteAccount(@NotBlank @Size(max = 64) String password) {}
+    record PasswordChange(@NotBlank @Size(max = 64) String currentPassword,
+                          @NotBlank @Size(min = 10, max = 64) String newPassword) {}
 
     private final SharingService sharing;
 
@@ -258,6 +260,15 @@ class SharingController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void removePush(Principal user, @Valid @RequestBody PushToken request) {
         sharing.pushToken(user.getName(), request.token(), false);
+    }
+
+    @PutMapping("/account/password")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void changePassword(Principal user, @Valid @RequestBody PasswordChange request,
+                        jakarta.servlet.http.HttpServletRequest http) {
+        sharing.changePassword(user.getName(), request);
+        var session = http.getSession(false);
+        if (session != null) session.invalidate();
     }
 
     @DeleteMapping("/account")

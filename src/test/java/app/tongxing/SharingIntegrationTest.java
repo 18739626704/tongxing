@@ -118,6 +118,26 @@ class SharingIntegrationTest {
     }
 
     @Test
+    void memberCanChangePasswordAndInvalidateAllOldSessions() throws Exception {
+        String username = "member_pw_" + UUID.randomUUID().toString().substring(0, 8);
+        Client first = new Client();
+        first.mutate("POST", "/register", Map.of("username", username, "password", PASSWORD), 201);
+        first.login(username);
+        Client second = new Client();
+        second.login(username);
+        String replacement = "integration-new-password";
+        first.mutate("PUT", "/account/password", Map.of("currentPassword", "incorrect-password", "newPassword", replacement), 400);
+        first.mutate("PUT", "/account/password", Map.of("currentPassword", PASSWORD, "newPassword", replacement), 204);
+        assertThat(first.get("/overview").statusCode()).isEqualTo(401);
+        assertThat(second.get("/overview").statusCode()).isEqualTo(401);
+        assertThat(first.send("POST", "/login", "username=" + username + "&password=" + PASSWORD,
+                "application/x-www-form-urlencoded", first.token()).statusCode()).isEqualTo(401);
+        assertThat(first.send("POST", "/login", "username=" + username + "&password=" + replacement,
+                "application/x-www-form-urlencoded", first.token()).statusCode()).isEqualTo(204);
+        assertThat(first.get("/overview").statusCode()).isEqualTo(200);
+    }
+
+    @Test
     void onlyAuthenticatedClientsReceiveTheAndroidMapConfiguration() throws Exception {
         Client client = new Client();
         assertThat(client.get("/overview").statusCode()).isEqualTo(401);

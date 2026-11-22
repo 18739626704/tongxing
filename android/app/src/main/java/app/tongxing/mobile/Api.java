@@ -68,8 +68,6 @@ final class Api {
         }
     }
 
-    boolean amapMapChoiceMade() { return preferences.contains("amap-map-allowed"); }
-
     boolean amapMapAllowed() { return preferences.getBoolean("amap-map-allowed", false); }
 
     void allowAmapMap(boolean allowed) {
@@ -119,19 +117,9 @@ final class Api {
         preferences.edit().putBoolean(key + accountKey(), enabled).apply();
     }
 
-    boolean sharingSetupAccepted(String pair) {
-        return !pair.isEmpty() && pair.equals(preferences.getString("sharing-setup:" + accountKey(), ""));
-    }
-
-    boolean unifiedConsentAccepted(String pair) {
-        return sharingSetupAccepted(pair) && pair.equals(preferences.getString("unified-consent:" + accountKey(), ""));
-    }
-
-    void acceptUnifiedConsent(String pair) {
+    void resumeAutomaticSharing() {
         String account = accountKey();
-        preferences.edit().putString("sharing-setup:" + account, pair)
-                .putString("unified-consent:" + account, pair)
-                .remove("review-sharing:" + account).remove("legacy-review:" + account).apply();
+        preferences.edit().remove("review-sharing:" + account).remove("legacy-review:" + account).apply();
     }
 
     boolean restoreLocationOnBoot() { return accountPreference("restore-location:"); }
@@ -144,13 +132,6 @@ final class Api {
         if (!preferences.getBoolean(legacy, false)) return;
         preferences.edit().remove(legacy).remove("sharing-setup:" + account).remove("unified-consent:" + account)
                 .putBoolean("review-sharing:" + account, true).putBoolean("legacy-review:" + account, true).commit();
-    }
-
-    boolean consumeLegacyReview() {
-        String key = "legacy-review:" + accountKey();
-        if (!preferences.getBoolean(key, false)) return false;
-        preferences.edit().remove(key).apply();
-        return true;
     }
 
     boolean sharingNeedsReview() { return accountPreference("review-sharing:"); }
