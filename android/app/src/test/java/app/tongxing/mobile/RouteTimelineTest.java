@@ -116,17 +116,17 @@ public class RouteTimelineTest {
         tracker.fix(position, 1000);
         tracker.fix(position, 61000);
         tracker.fix(position, 121000);
-        assertEquals(LocationCadence.QUIET, tracker.interval(121000));
+        assertEquals(LocationCadence.STATIONARY_INTERVAL, tracker.interval(121000));
         tracker.step(123000);
-        assertEquals(LocationCadence.MOVING, tracker.interval(123000));
+        assertEquals(LocationCadence.MOVING_INTERVAL, tracker.interval(123000));
         tracker.fix(position, 301000);
         tracker.fix(position, 361000);
         tracker.fix(position, 421000);
-        assertEquals(LocationCadence.QUIET, tracker.interval(421000));
+        assertEquals(LocationCadence.STATIONARY_INTERVAL, tracker.interval(421000));
         position.setSpeed(8f);
         position.setSpeedAccuracyMetersPerSecond(.5f);
         tracker.fix(position, 500000);
-        assertEquals(LocationCadence.MOVING, tracker.interval(500000));
+        assertEquals(LocationCadence.MOVING_INTERVAL, tracker.interval(500000));
     }
 
     private static org.json.JSONObject point(long timestamp, double latitude, double accuracy) {
