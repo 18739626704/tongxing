@@ -42,11 +42,12 @@ class Security {
         http.securityMatcher("/admin", "/admin/**").authenticationManager(new ProviderManager(provider))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/admin", "/admin/", "/admin/index.html", "/admin/admin.css",
-                                "/admin/admin.js", "/admin/csrf", "/admin/login").permitAll()
+                                "/admin/admin.js", "/admin/route-map.js", "/admin/vendor/leaflet.css",
+                                "/admin/vendor/leaflet.js", "/admin/csrf", "/admin/login").permitAll()
                         .anyRequest().hasRole("ADMIN"))
                 .addFilterBefore(new AdminSessionCheck(admin), LogoutFilter.class)
                 .headers(headers -> headers.contentSecurityPolicy(policy -> policy.policyDirectives(
-                        "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")));
+                        "default-src 'self'; img-src 'self' data: https://tile.openstreetmap.org; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")));
         return sessionEndpoints(http, "/admin").build();
     }
 

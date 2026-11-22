@@ -47,7 +47,7 @@ curl -fsS https://share.example.com/api/health
 | `REGISTRATION_ENABLED` | 可选，默认允许注册 |
 | 地图、推送与管理员 | 参照上表的可选变量 |
 
-已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.7.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
+已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.8.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
 
 ## 手机注册
 
@@ -81,3 +81,5 @@ curl -fsS https://share.example.com/api/health
 此配置适用于需要在应用退到后台时提高消息提醒及时性的部署。基础 APK 的消息依靠同步获取，后台受 Android 限制时可能延迟。兼容手机、通知权限以及系统的锁屏通知设置也会影响显示。
 
 在 Firebase 控制台创建项目并注册 Android 应用 `app.tongxing.mobile`。下载 Android 应用的 `google-services.json` 用于[客户端构建](development.md#可选构建)。为同一个 Firebase 项目创建有发送 FCM 消息权限的服务账号，生成凭据并将完整 JSON 以单行写入服务器上的 `FCM_SERVICE_ACCOUNT_JSON`。请通过部署平台的私有变量界面配置生产凭据。不要上传 JSON 或在日志中打印它。
+
+管理端足迹使用 OpenStreetMap 街道底图，无需地图 Key。底图由浏览器加载，瓦片不可用时仍可查看足迹和采样坐标。Android SDK Key 和 Web 服务 Key 按前述各自用途配置。

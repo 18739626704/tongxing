@@ -115,6 +115,17 @@ class SharingIntegrationTest {
         assertThat(otherSession.overview().at("/self/sharing").asBoolean()).isFalse();
         assertThat(operator.admin("GET", "/api/audit", "", null).body())
                 .contains("VIEW_ROUTE", "DISABLE_ACCOUNT", "ENABLE_ACCOUNT");
+        String auditFilter = "/api/audit?username=" + username;
+        var filteredAudit = operator.admin("GET", auditFilter + "&from=" + now + "&to=" + (now + 60_000), "", null);
+        assertThat(filteredAudit.statusCode()).isEqualTo(200);
+        var auditRows = json.readTree(filteredAudit.body());
+        assertThat(auditRows).isNotEmpty().allSatisfy(row ->
+                assertThat(row.path("username").asText()).isEqualTo(username));
+        assertThat(json.readTree(operator.admin("GET", auditFilter + "&from=0&to=100", "", null).body()).size()).isZero();
+        assertThat(operator.admin("GET", auditFilter + "&from=0", "", null).statusCode()).isEqualTo(400);
+        var leaflet = operator.admin("GET", "/vendor/leaflet.js", "", null);
+        assertThat(leaflet.statusCode()).isEqualTo(200);
+        assertThat(leaflet.body()).contains("Leaflet");
     }
 
     @Test

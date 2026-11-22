@@ -4,7 +4,15 @@ const byId = id => document.getElementById(id);
 const panel = byId('console');
 const loginPanel = byId('signin');
 const passwordPanel = byId('password-panel');
-const latest = new Intl.DateTimeFormat('zh-CN', {dateStyle: 'medium', timeStyle: 'medium'});
+const timeZone = 'Asia/Shanghai';
+const latest = new Intl.DateTimeFormat('zh-CN', {dateStyle: 'medium', timeStyle: 'medium', timeZone});
+const routeTime = new Intl.DateTimeFormat('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false, timeZone});
+const dayFormatter = new Intl.DateTimeFormat('sv-SE', {timeZone, year: 'numeric', month: '2-digit', day: '2-digit'});
+const dayMillis = 86_400_000;
+const dateRange = value => {
+    const from = Date.parse(value + 'T00:00:00+08:00');
+    return {from, to: from + dayMillis};
+};
 const labels = {
     VIEW_STATUS: '查看位置与共享状态', VIEW_ROUTE: '查看足迹',
     VIEW_ACTIVITY: '查看动态', VIEW_PLACES: '查看常去地点', DISABLE_ACCOUNT: '禁用账号', ENABLE_ACCOUNT: '恢复账号',
@@ -24,6 +32,7 @@ let nextCursor;
 let requestVersion = 0;
 let listVersion = 0;
 let routeVersion = 0;
+let loadedRouteDate;
 let recordsVersion = 0;
 let activityBefore;
 let points = [];
@@ -97,6 +106,7 @@ function showSection(next, load = true) {
         else button.removeAttribute('aria-current');
     }
     if (next === 'audit' && load) loadAudit();
+    if (next === 'users' && load && detailTab === 'route') showDetailTab('route');
 }
 
 function showDetailTab(next, load = true) {
@@ -106,6 +116,12 @@ function showDetailTab(next, load = true) {
     }
     for (const page of document.querySelectorAll('[data-detail-page]')) {
         page.hidden = page.dataset.detailPage !== next;
+    }
+    if (next === 'route' && load) {
+        if (loadedRouteDate !== byId('route-date').value) loadRoute();
+        else if (points.length && byId('route-map-card').hidden && byId('route').hidden) {
+            if (!adminRouteMap.show(points, at => routeTime.format(at))) drawRoute();
+        } else adminRouteMap.fit();
     }
     if (next === 'records' && load && !recordsLoaded) loadRecords(false);
 }
@@ -158,9 +174,9 @@ async function loadAccounts() {
             const avatar = document.createElement('span');
             avatar.className = 'avatar';
             avatar.setAttribute('aria-hidden', 'true');
-            avatar.textContent = initials(account.displayName || account.username);
-            title.textContent = account.displayName || account.username;
-            username.textContent = account.username;
+            avatar.textContent = initials(account.username);
+            title.textContent = account.username;
+            username.textContent = account.displayName || account.username;
             name.className = 'account-name';
             name.append(title);
             if (title.textContent !== username.textContent) name.append(username);
@@ -205,8 +221,12 @@ function clearRoute(message = '') {
     points = [];
     pointPage = 0;
     byId('route-status').textContent = message;
+    loadedRouteDate = null;
+    adminRouteMap.reset();
+    byId('route-summary').hidden = true;
     byId('route').hidden = true;
     byId('route-table').hidden = true;
+    byId('route-table').open = false;
     byId('points').replaceChildren();
     const canvas = byId('route');
     canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
@@ -215,6 +235,7 @@ function clearRoute(message = '') {
 function clearLocation(message = '') {
     byId('location-status').textContent = message;
     byId('location').replaceChildren();
+    byId('show-recent-route').hidden = true;
     byId('device').replaceChildren();
     byId('apps').replaceChildren();
     byId('usage').hidden = true;
@@ -232,6 +253,7 @@ function clearLocation(message = '') {
 }
 
 function selectAccount(id) {
+    const keepRoute = detailTab === 'route';
     byId('workspace').classList.add('account-open');
     if (matchMedia('(max-width: 720px)').matches) window.scrollTo(0, 0);
     selected = id;
@@ -242,6 +264,7 @@ function selectAccount(id) {
     byId('selection-status').textContent = '正在读取账号…';
     byId('details').hidden = true;
     clearLocation();
+    if (keepRoute) showDetailTab('route', false);
     loadDetail(true);
 }
 
@@ -253,7 +276,10 @@ async function loadDetail(focus = false) {
         if (panel.hidden || version !== requestVersion) return;
         selectedDetail = detail;
         renderDetail(detail);
-        if (focus) byId('person-name').focus({preventScroll:true});
+        if (focus) {
+            byId('person-name').focus({preventScroll:true});
+            if (detailTab === 'route') loadRoute();
+        }
     } catch (error) {
         if (version !== requestVersion) return;
         selectedDetail = null;
@@ -268,15 +294,14 @@ function renderDetail(detail) {
     const {account, status} = detail;
     byId('selection-status').textContent = '';
     byId('details').hidden = false;
-    const name = account.displayName || account.username;
-    byId('person-name').textContent = name;
-    byId('person-username').textContent = '登录名 · ' + account.username;
-    byId('person-avatar').textContent = initials(name);
+    byId('person-name').textContent = account.username;
+    byId('person-username').textContent = account.displayName !== account.username ? account.displayName || '' : '';
+    byId('person-avatar').textContent = initials(account.username);
     const state = byId('person-status');
     state.classList.toggle('disabled', account.disabled);
     state.textContent = account.disabled ? '已禁用' : '正常';
     facts(byId('profile'), [
-        ['账号 ID', account.id], ['伴侣绑定', account.paired ? '已绑定' : '未绑定'],
+        ['伴侣绑定', account.paired ? '已绑定' : '未绑定'],
         ['位置共享', !account.paired ? '未绑定' : account.sharing ? '共享中' : '已暂停']
     ]);
     const accountAction = byId('set-account-state');
@@ -287,8 +312,8 @@ function renderDetail(detail) {
     byId('location-status').textContent = position
         ? (age <= 120 ? '最近上报 · ' + age + ' 秒前' : '上次上报 · ' + displayTime(position.recordedAt))
         : '暂无位置上报。';
+    byId('show-recent-route').hidden = !position;
     facts(byId('location'), position ? [
-        ['坐标', position.latitude.toFixed(6) + ', ' + position.longitude.toFixed(6)],
         ['采集时间', displayTime(position.recordedAt)], ['定位精度', position.accuracy.toFixed(1) + ' 米'],
         ['电量', position.battery < 0 ? null : position.battery + '%'],
         ['充电', position.charging ? '充电中' : '未充电']
@@ -511,28 +536,72 @@ byId('set-account-state').addEventListener('click', async () => {
 });
 byId('load-records').addEventListener('click', () => loadRecords(false));
 byId('more-activity').addEventListener('click', () => loadRecords(true));
-byId('route-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    if (!selectedDetail?.status) return;
-    const [year, month, day] = byId('route-date').value.split('-').map(Number);
-    const from = new Date(year, month - 1, day).getTime();
-    const to = new Date(year, month - 1, day + 1).getTime();
+function renderRouteSummary() {
+    const first = points[0];
+    const last = points.at(-1);
+    const summary = byId('route-summary');
+    summary.replaceChildren();
+    for (const [label, value] of [
+        ['首次定位', routeTime.format(first.recordedAt)],
+        ['最后定位', routeTime.format(last.recordedAt)],
+        ['采样点', String(points.length)]
+    ]) {
+        const item = document.createElement('div');
+        facts(item, [[label, value]]);
+        summary.append(item);
+    }
+    summary.hidden = false;
+}
+
+async function loadRoute() {
+    const date = byId('route-date');
+    if (!selectedDetail || !date.value || !date.validity.valid) return;
+    byId('route-next-day').disabled = date.value >= date.max;
+    byId('route-previous-day').disabled = date.value <= date.min;
+    const value = date.value;
+    const {from, to} = dateRange(value);
     clearRoute('正在读取足迹…');
     const version = routeVersion;
     try {
         const route = await request('/api/accounts/' + selected + '/positions?' + new URLSearchParams({from, to}));
         if (version !== routeVersion) return;
         points = route;
-        byId('route-status').textContent = points.length ? points.length + ' 个足迹采样点，日期按浏览器时区计算。' : '该日期暂无足迹。';
+        loadedRouteDate = value;
+        byId('route-status').textContent = points.length ? '' : '该日期暂无足迹。';
         if (points.length) {
-            drawRoute();
+            renderRouteSummary();
             showPoints();
+            if (detailTab === 'route' && section === 'users') {
+                if (!adminRouteMap.show(points, at => routeTime.format(at))) drawRoute();
+            }
         }
     } catch (error) {
         if (version !== routeVersion) return;
-        clearRoute('足迹读取失败。');
+        clearRoute('足迹读取失败，请重新选择日期。');
         if (error.status === 401) handle(error);
     }
+}
+
+function shiftRouteDay(amount) {
+    const date = byId('route-date');
+    if (!date.value) return;
+    const next = dayFormatter.format(dateRange(date.value).from + amount * dayMillis);
+    if (next < date.min || next > date.max) return;
+    date.value = next;
+    loadRoute();
+}
+
+byId('route-form').addEventListener('submit', event => { event.preventDefault(); loadRoute(); });
+byId('route-date').addEventListener('change', loadRoute);
+byId('route-previous-day').addEventListener('click', () => shiftRouteDay(-1));
+byId('route-next-day').addEventListener('click', () => shiftRouteDay(1));
+byId('show-recent-route').addEventListener('click', () => {
+    const position = selectedDetail?.status.lastLocation;
+    if (!position) return;
+    const date = byId('route-date');
+    const recordedDay = dayFormatter.format(position.recordedAt);
+    date.value = recordedDay < date.min ? date.min : recordedDay > date.max ? date.max : recordedDay;
+    showDetailTab('route');
 });
 byId('points-prev').addEventListener('click', () => { pointPage--; showPoints(); });
 byId('points-next').addEventListener('click', () => { pointPage++; showPoints(); });
@@ -540,22 +609,28 @@ async function loadAudit() {
     const version = ++auditVersion;
     byId('audit-status').textContent = '正在读取…';
     try {
-        const records = await request('/api/audit');
+        const username = byId('audit-username').value.trim();
+        const date = byId('audit-date').value;
+        const filter = new URLSearchParams({username, ...(date ? dateRange(date) : {})});
+        const records = await request('/api/audit?' + filter);
         if (panel.hidden || version !== auditVersion) return;
         rows(byId('audit'), records.map(entry => [
-            displayTime(entry.occurredAt), labels[entry.action] || entry.action, entry.targetId
+            displayTime(entry.occurredAt), labels[entry.action] || entry.action, entry.username || '账号已不存在'
         ]));
-        byId('audit-status').textContent = records.length ? '' : '暂无操作记录。';
+        byId('audit-status').textContent = records.length === 100 ? '显示最近 100 条匹配记录。' : records.length ? '' : '暂无匹配的操作记录。';
     } catch (error) {
         if (version !== auditVersion) return;
         byId('audit-status').textContent = '读取失败，请重试。';
         handle(error);
     }
 }
-byId('audit-refresh').addEventListener('click', loadAudit);
-const today = new Date();
-byId('route-date').value = [today.getFullYear(), today.getMonth() + 1, today.getDate()]
-    .map(part => String(part).padStart(2, '0')).join('-');
+byId('audit-form').addEventListener('submit', event => { event.preventDefault(); loadAudit(); });
+byId('audit-clear').addEventListener('click', () => { byId('audit-form').reset(); loadAudit(); });
+const today = dayFormatter.format(Date.now());
+byId('route-date').max = today;
+byId('route-date').min = dayFormatter.format(Date.now() - 30 * dayMillis);
+byId('route-date').value = today;
+byId('audit-date').max = today;
 window.setInterval(() => {
     if (selected && section === 'users' && detailTab === 'overview' && !panel.hidden && !document.hidden
         && (!matchMedia('(max-width: 720px)').matches || byId('workspace').classList.contains('account-open'))) loadDetail();
