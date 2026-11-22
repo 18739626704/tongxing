@@ -35,6 +35,16 @@ apksigner verify --verbose --print-certs tongxing.apk
 
 `zipalign` 和 `apksigner` 在 Android SDK Build Tools 中。每个分发渠道应妥善保管自己的签名密钥，更新需要与手机已安装的版本使用同一个签名。自行签名的版本通常不能覆盖 GitHub 下载的版本。相同包名下更换签名需要先卸载，手机上的应用本地配置会被清空。请先确认服务器地址和账号凭据。
 
+### 固定服务器直连版
+
+```bash
+cd android
+./gradlew -PtongxingHosted=true testDebugUnitTest --tests app.tongxing.mobile.HostedEditionTest
+./gradlew -PtongxingHosted=true lintDebug assembleRelease
+```
+
+直连版的包名为 `app.tongxing.mobile.hosted`，固定连接 `https://tongxing.byterecall.xyz`。使用与标准版相同的发布签名即可发布两种 APK。直连版若使用高德原生地图，其包名和证书指纹也需在高德平台完成授权。每个版本的 Assets 包含标准 APK、直连 APK 及对应的 `SHA256SUMS`。
+
 ### 可选构建
 
 ```bash

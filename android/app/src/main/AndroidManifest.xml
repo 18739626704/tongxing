@@ -21,7 +21,7 @@
         </intent>
     </queries>
 
-    <application android:label="同行" android:allowBackup="false" android:dataExtractionRules="@xml/no_backup"
+    <application android:label="${appLabel}" android:allowBackup="false" android:dataExtractionRules="@xml/no_backup"
         android:fullBackupContent="@xml/no_backup_legacy" android:theme="@style/AppTheme"
         android:icon="@drawable/ic_position" android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">

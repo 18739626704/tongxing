@@ -44,7 +44,11 @@ final class Api {
     private Api(Context context) {
         preferences = context.getSharedPreferences("tongxing", Context.MODE_PRIVATE);
         persistSession = true;
-        base = preferences.getString("base", "");
+        String storedBase = preferences.getString("base", "");
+        base = fixedServer() ? BuildConfig.FIXED_SERVER_URL : storedBase;
+        if (fixedServer() && !base.equals(storedBase)) {
+            preferences.edit().putString("base", base).remove("session").remove("username").apply();
+        }
         cookie = preferences.getString("session", "");
         username = preferences.getString("username", "");
     }
@@ -56,6 +60,12 @@ final class Api {
         this.cookie = cookie;
         this.username = username;
         this.sessionVersion = sessionVersion;
+    }
+
+    static boolean fixedServer() { return !BuildConfig.FIXED_SERVER_URL.isEmpty(); }
+
+    static String loginBase(String address) throws IOException {
+        return fixedServer() ? BuildConfig.FIXED_SERVER_URL : validateBase(address);
     }
 
     String savedBase() { return preferences.getString("base", ""); }
@@ -158,7 +168,7 @@ final class Api {
 
     synchronized void authenticate(String address, String user, String password, boolean register)
             throws Exception {
-        base = validateBase(address);
+        base = loginBase(address);
         clearSession();
         preferences.edit().putString("base", base).apply();
         String normalized = user.trim().toLowerCase(Locale.ROOT);
