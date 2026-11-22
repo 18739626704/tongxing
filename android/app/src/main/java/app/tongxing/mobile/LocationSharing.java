@@ -49,6 +49,8 @@ public final class LocationSharing extends Service implements LocationListener {
     private LocationManager locations;
     private volatile String shareKey;
     private long lastAccepted;
+    private boolean lastAcceptedWasUsable;
+    private long sharingStarted;
     private boolean uploading;
     private long lastUsageReport;
     private long lastAppUsageReport;
@@ -225,6 +227,8 @@ public final class LocationSharing extends Service implements LocationListener {
         if (pending == null) pending = new PendingPositions(this);
         pending.prepare(sharingAccount, key);
         lastAccepted = 0;
+        lastAcceptedWasUsable = false;
+        sharingStarted = SystemClock.elapsedRealtime();
         lastAccurateGps = 0;
         lastProviderFix = SystemClock.elapsedRealtime();
         lastFixElapsed = 0;
@@ -259,7 +263,6 @@ public final class LocationSharing extends Service implements LocationListener {
     @SuppressLint("MissingPermission")
     private void subscribe() {
         locations = getSystemService(LocationManager.class);
-        locations.removeUpdates(this);
         main.removeCallbacks(retryProviders);
         boolean fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
         boolean coarse = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
@@ -270,8 +273,7 @@ public final class LocationSharing extends Service implements LocationListener {
         for (String provider : providers) {
             try {
                 if (!locations.isProviderEnabled(provider)) continue;
-                long interval = fine && LocationManager.NETWORK_PROVIDER.equals(provider)
-                        ? LocationCadence.STATIONARY_INTERVAL : LocationCadence.PROVIDER_INTERVAL;
+                long interval = LocationCadence.PROVIDER_INTERVAL;
                 locations.requestLocationUpdates(provider, interval, 0, this);
                 registered = true;
                 Location fix = locations.getLastKnownLocation(provider);
@@ -296,12 +298,23 @@ public final class LocationSharing extends Service implements LocationListener {
 
     @Override
     public void onLocationChanged(Location location) {
+        acceptFix(location, 60_000);
+    }
+
+    @Override
+    public void onLocationChanged(java.util.List<Location> batch) {
+        // During screen-off delivery several minutes of real fixes can arrive together.
+        for (Location fix : batch) acceptFix(fix, 86_400_000);
+    }
+
+    private void acceptFix(Location location, long maxAge) {
         if (shareKey == null) return;
         long now = SystemClock.elapsedRealtime();
         long fixAt = location.getElapsedRealtimeNanos() / 1_000_000;
         long age = now - fixAt;
-        if (age < 0 || age > 60_000 || (lastFixElapsed != 0 && fixAt <= lastFixElapsed)
+        if (age < 0 || age > maxAge || (lastFixElapsed != 0 && fixAt <= lastFixElapsed)
                 || !location.hasAccuracy() || location.getAccuracy() > 10_000) return;
+        if (maxAge > 60_000 && fixAt < sharingStarted) return;
         lastProviderFix = now;
         if (LocationManager.GPS_PROVIDER.equals(location.getProvider()) && location.getAccuracy() <= 60) {
             lastAccurateGps = fixAt;
@@ -310,7 +323,11 @@ public final class LocationSharing extends Service implements LocationListener {
         }
         lastFixElapsed = fixAt;
         cadence.fix(location, fixAt);
-        if (lastAccepted != 0 && fixAt - lastAccepted < cadence.interval(fixAt)) return;
+        boolean usable = location.getAccuracy() <= 100;
+        // A coarse network sample must not consume the slot for a subsequent usable GPS fix.
+        if (lastAccepted != 0 && (lastAcceptedWasUsable || !usable)
+                && fixAt - lastAccepted < cadence.interval(fixAt)) return;
+        lastAcceptedWasUsable = usable;
         lastAccepted = fixAt;
         BatteryManager battery = getSystemService(BatteryManager.class);
         int level = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
