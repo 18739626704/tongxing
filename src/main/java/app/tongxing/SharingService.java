@@ -806,6 +806,18 @@ class SharingService {
     }
 
     @Transactional
+    public String changeDisplayName(String username, String value) {
+        String name = value.strip();
+        if (name.isBlank() || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw failure(HttpStatus.BAD_REQUEST, "请输入单行显示名称");
+        }
+        guard.lock();
+        Member member = current(username);
+        jdbc.update("UPDATE member SET display_name = ? WHERE id = ?", name, member.id);
+        return name;
+    }
+
+    @Transactional
     public void changePassword(String username, SharingController.PasswordChange change) {
         guard.lock();
         Member member = current(username);

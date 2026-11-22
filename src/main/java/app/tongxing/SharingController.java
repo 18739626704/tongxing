@@ -262,6 +262,13 @@ class SharingController {
         sharing.pushToken(user.getName(), request.token(), false);
     }
 
+    record Profile(@NotBlank @Size(max = 32) String displayName) {}
+
+    @PutMapping("/account/profile")
+    Profile changeDisplayName(Principal user, @Valid @RequestBody Profile profile) {
+        return new Profile(sharing.changeDisplayName(user.getName(), profile.displayName()));
+    }
+
     @PutMapping("/account/password")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void changePassword(Principal user, @Valid @RequestBody PasswordChange request,

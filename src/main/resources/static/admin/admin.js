@@ -14,6 +14,10 @@ const labels = {
 };
 let selected;
 let selectedDetail;
+let section = 'users';
+let detailTab = 'overview';
+let recordsLoaded = false;
+let auditVersion = 0;
 let search = '';
 let cursors = [''];
 let nextCursor;
@@ -53,6 +57,10 @@ function showSignIn(message = '') {
     panel.hidden = true;
     passwordPanel.hidden = true;
     byId('identity').hidden = true;
+    byId('primary-nav').hidden = true;
+    byId('admin-menu').open = false;
+    byId('workspace').classList.remove('account-open');
+    auditVersion++;
     loginPanel.hidden = false;
     selected = null;
     selectedDetail = null;
@@ -71,11 +79,38 @@ function handle(error) {
 
 function openPasswordForm(mandatory) {
     panel.hidden = true;
+    byId('primary-nav').hidden = true;
+    byId('admin-menu').open = false;
+    byId('password-back').hidden = mandatory;
     loginPanel.hidden = true;
     passwordPanel.hidden = false;
     byId('password-form').reset();
     notice(mandatory ? '首次登录请先设置自己的管理员密码。' : '');
 }
+
+function showSection(next, load = true) {
+    section = next;
+    byId('users-page').hidden = next !== 'users';
+    byId('audit-page').hidden = next !== 'audit';
+    for (const button of [byId('nav-users'), byId('nav-audit')]) {
+        if (button.id === 'nav-' + next) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
+    }
+    if (next === 'audit' && load) loadAudit();
+}
+
+function showDetailTab(next, load = true) {
+    detailTab = next;
+    for (const button of document.querySelectorAll('[data-detail-tab]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.detailTab === next));
+    }
+    for (const page of document.querySelectorAll('[data-detail-page]')) {
+        page.hidden = page.dataset.detailPage !== next;
+    }
+    if (next === 'records' && load && !recordsLoaded) loadRecords(false);
+}
+
+function initials(name) { return Array.from(String(name || '').trim())[0] || '—'; }
 
 async function openConsole(session) {
     byId('administrator').textContent = session.username;
@@ -88,8 +123,15 @@ async function openConsole(session) {
     }
     passwordPanel.hidden = true;
     panel.hidden = false;
+    byId('primary-nav').hidden = false;
+    byId('workspace').classList.remove('account-open');
+    selected = null;
+    selectedDetail = null;
+    requestVersion++;
+    clearLocation();
+    showSection('users', false);
     byId('details').hidden = true;
-    byId('selection-status').textContent = '选择一个账号查看详情。';
+    byId('selection-status').textContent = '从账号列表选择用户';
     notice('');
     search = '';
     cursors = [''];
@@ -110,20 +152,32 @@ async function loadAccounts() {
             const row = document.createElement('li');
             const button = document.createElement('button');
             const name = document.createElement('span');
-            const state = document.createElement('small');
-            name.textContent = account.displayName === account.username ? account.username
-                : account.displayName + ' · ' + account.username;
-            state.textContent = account.disabled ? '已禁用' : '启用';
+            const title = document.createElement('strong');
+            const username = document.createElement('small');
+            const state = document.createElement('span');
+            const avatar = document.createElement('span');
+            avatar.className = 'avatar';
+            avatar.setAttribute('aria-hidden', 'true');
+            avatar.textContent = initials(account.displayName || account.username);
+            title.textContent = account.displayName || account.username;
+            username.textContent = account.username;
+            name.className = 'account-name';
+            name.append(title);
+            if (title.textContent !== username.textContent) name.append(username);
+            state.className = account.disabled ? 'chip disabled' : 'chip';
+            state.textContent = account.disabled ? '已禁用' : '正常';
             button.type = 'button';
             button.dataset.account = account.id;
             button.setAttribute('aria-pressed', String(account.id === selected));
             button.addEventListener('click', () => selectAccount(account.id));
-            button.append(name, state);
+            button.append(avatar, name, state);
             row.append(button);
             list.append(row);
         }
         byId('list-status').textContent = page.accounts.length ? '' : '没有符合条件的账号。';
         nextCursor = page.next;
+        byId('account-pagination').hidden = !nextCursor && cursors.length === 1;
+        byId('account-page-number').textContent = page.accounts.length ? '第 ' + cursors.length + ' 页' : '';
         byId('previous').disabled = cursors.length === 1;
         byId('next').disabled = !nextCursor;
     } catch (error) {
@@ -167,7 +221,9 @@ function clearLocation(message = '') {
     byId('route-form').hidden = true;
     recordsVersion++;
     activityBefore = null;
-    byId('stored-records').open = false;
+    recordsLoaded = false;
+    showDetailTab('overview', false);
+    byId('usage').open = false;
     byId('more-activity').hidden = true;
     byId('records-status').textContent = '';
     byId('saved-places').replaceChildren();
@@ -176,6 +232,8 @@ function clearLocation(message = '') {
 }
 
 function selectAccount(id) {
+    byId('workspace').classList.add('account-open');
+    if (matchMedia('(max-width: 720px)').matches) window.scrollTo(0, 0);
     selected = id;
     selectedDetail = null;
     for (const button of byId('accounts').querySelectorAll('button')) {
@@ -184,10 +242,10 @@ function selectAccount(id) {
     byId('selection-status').textContent = '正在读取账号…';
     byId('details').hidden = true;
     clearLocation();
-    loadDetail();
+    loadDetail(true);
 }
 
-async function loadDetail() {
+async function loadDetail(focus = false) {
     const id = selected;
     const version = ++requestVersion;
     try {
@@ -195,6 +253,7 @@ async function loadDetail() {
         if (panel.hidden || version !== requestVersion) return;
         selectedDetail = detail;
         renderDetail(detail);
+        if (focus) byId('person-name').focus({preventScroll:true});
     } catch (error) {
         if (version !== requestVersion) return;
         selectedDetail = null;
@@ -209,12 +268,20 @@ function renderDetail(detail) {
     const {account, status} = detail;
     byId('selection-status').textContent = '';
     byId('details').hidden = false;
+    const name = account.displayName || account.username;
+    byId('person-name').textContent = name;
+    byId('person-username').textContent = '登录名 · ' + account.username;
+    byId('person-avatar').textContent = initials(name);
+    const state = byId('person-status');
+    state.classList.toggle('disabled', account.disabled);
+    state.textContent = account.disabled ? '已禁用' : '正常';
     facts(byId('profile'), [
-        ['登录名', account.username], ['显示名称', account.displayName], ['账号 ID', account.id],
-        ['账号状态', account.disabled ? '已禁用' : '启用'], ['伴侣绑定', account.paired ? '已绑定' : '未绑定'],
-        ['向伴侣共享位置', account.sharing ? '共享中' : '已暂停']
+        ['账号 ID', account.id], ['伴侣绑定', account.paired ? '已绑定' : '未绑定'],
+        ['位置共享', !account.paired ? '未绑定' : account.sharing ? '共享中' : '已暂停']
     ]);
-    byId('set-account-state').textContent = account.disabled ? '恢复账号' : '禁用账号';
+    const accountAction = byId('set-account-state');
+    accountAction.textContent = account.disabled ? '恢复账号' : '禁用账号';
+    accountAction.classList.toggle('danger', !account.disabled);
     const position = status.lastLocation;
     const age = position ? Math.max(0, Math.round((detail.serverTime - position.recordedAt) / 1000)) : null;
     byId('location-status').textContent = position
@@ -235,6 +302,7 @@ function renderDetail(detail) {
             ['屏幕上报', displayTime(status.liveScreen.updatedAt)]] : []),
         ...(status.journey ? [['行程状态', labels[status.journey.state] || status.journey.state]] : [])
     ]);
+    byId('device-status').textContent = byId('device').childElementCount ? '' : '暂无设备状态上报。';
     const apps = byId('apps');
     apps.replaceChildren();
     for (const item of detail.apps?.apps || []) {
@@ -247,7 +315,7 @@ function renderDetail(detail) {
 }
 
 async function loadRecords(earlier) {
-    if (!selected || (earlier && !activityBefore)) return;
+    if (!selectedDetail || (earlier && !activityBefore)) return;
     const account = selected;
     const version = ++recordsVersion;
     const prefix = '/api/accounts/' + account;
@@ -259,17 +327,18 @@ async function loadRecords(earlier) {
         ]);
         if (version !== recordsVersion || account !== selected || panel.hidden) return;
         if (places) {
-            renderRecordLines(byId('saved-places'), places.map(place => (
+            const lines = places.map(place => (
                 place.name + ' · ' + place.latitude.toFixed(6) + ', ' + place.longitude.toFixed(6)
                     + (place.watching ? ' · 到达提醒已开启' : '')
-            )), true);
+            ));
+            renderRecordLines(byId('saved-places'), lines.length ? lines : ['暂无已保存的地点'], true);
         }
-        renderRecordLines(byId('activities'), activity.items.map(item =>
-            displayTime(item.createdAt) + ' · ' + item.text
-        ), !earlier);
+        const events = activity.items.map(item => displayTime(item.createdAt) + ' · ' + item.text);
+        renderRecordLines(byId('activities'), events.length || earlier ? events : ['暂无动态'], !earlier);
+        recordsLoaded = true;
         activityBefore = activity.before;
         byId('more-activity').hidden = !activityBefore;
-        byId('records-status').textContent = activity.items.length || places?.length ? '' : '暂无记录。';
+        byId('records-status').textContent = '';
     } catch (error) {
         if (version !== recordsVersion) return;
         byId('records-status').textContent = '读取记录失败。';
@@ -342,6 +411,8 @@ function showPoints() {
     ]));
     byId('points-prev').disabled = pointPage === 0;
     byId('points-next').disabled = start + pointPageSize >= points.length;
+    byId('points-pagination').hidden = points.length <= pointPageSize;
+    byId('points-page-number').textContent = '第 ' + (pointPage + 1) + ' / ' + Math.ceil(points.length / pointPageSize) + ' 页';
     byId('route-table').hidden = false;
 }
 
@@ -361,6 +432,26 @@ byId('login').addEventListener('submit', async event => {
     }
 });
 byId('change-password').addEventListener('click', () => openPasswordForm(false));
+byId('password-back').addEventListener('click', () => {
+    passwordPanel.hidden = true;
+    panel.hidden = false;
+    byId('primary-nav').hidden = false;
+    notice('');
+});
+byId('nav-users').addEventListener('click', () => showSection('users'));
+byId('nav-audit').addEventListener('click', () => showSection('audit'));
+byId('back-to-accounts').addEventListener('click', () => {
+    byId('workspace').classList.remove('account-open');
+    window.scrollTo(0, 0);
+    byId('accounts').querySelector('[aria-pressed="true"]')?.focus({preventScroll:true});
+});
+for (const button of document.querySelectorAll('[data-detail-tab]')) {
+    button.addEventListener('click', () => showDetailTab(button.dataset.detailTab));
+}
+document.addEventListener('click', event => {
+    const menu = byId('admin-menu');
+    if (!menu.contains(event.target)) menu.open = false;
+});
 byId('password-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -445,19 +536,29 @@ byId('route-form').addEventListener('submit', async event => {
 });
 byId('points-prev').addEventListener('click', () => { pointPage--; showPoints(); });
 byId('points-next').addEventListener('click', () => { pointPage++; showPoints(); });
-byId('audit-refresh').addEventListener('click', async () => {
+async function loadAudit() {
+    const version = ++auditVersion;
+    byId('audit-status').textContent = '正在读取…';
     try {
         const records = await request('/api/audit');
-        if (!panel.hidden) rows(byId('audit'), records.map(entry => [
+        if (panel.hidden || version !== auditVersion) return;
+        rows(byId('audit'), records.map(entry => [
             displayTime(entry.occurredAt), labels[entry.action] || entry.action, entry.targetId
         ]));
-    } catch (error) { handle(error); }
-});
+        byId('audit-status').textContent = records.length ? '' : '暂无操作记录。';
+    } catch (error) {
+        if (version !== auditVersion) return;
+        byId('audit-status').textContent = '读取失败，请重试。';
+        handle(error);
+    }
+}
+byId('audit-refresh').addEventListener('click', loadAudit);
 const today = new Date();
 byId('route-date').value = [today.getFullYear(), today.getMonth() + 1, today.getDate()]
     .map(part => String(part).padStart(2, '0')).join('-');
 window.setInterval(() => {
-    if (selected && !panel.hidden && !document.hidden) loadDetail();
+    if (selected && section === 'users' && detailTab === 'overview' && !panel.hidden && !document.hidden
+        && (!matchMedia('(max-width: 720px)').matches || byId('workspace').classList.contains('account-open'))) loadDetail();
 }, 15000);
 (async () => {
     try {

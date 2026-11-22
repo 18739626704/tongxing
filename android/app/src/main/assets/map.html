@@ -113,7 +113,6 @@
 
   window.updateMap = function(data) {
     for (const corner of document.querySelectorAll('.leaflet-top')) corner.style.top = (data.top || 0) + 'px';
-    const hasData = data.points.length > 0;
     overlays.clearLayers();
     const live = data.mode === 'live' || data.mode === 'partner';
     const source = data.points.map(point => [point.latitude, point.longitude]);
@@ -170,22 +169,24 @@
     const modeChanged = data.mode !== lastMode;
     if (modeChanged || data.recenter) following = true;
     const padding = cameraPadding(data);
+    const cameraPoints = data.mode === 'partner'
+      ? points.filter((_, index) => data.points[index].partner) : points;
     if ((focus && (lastHighlight !== highlight.id || data.recenter)) ||
-        (!focus && hasData && (!pointsShown || modeChanged || data.recenter ||
-          (live && following && (points.length !== count || outsideViewport(points, padding)
-            || canZoomIn(points, padding)))))) {
-      const maxZoom = focus ? 17 : data.mode === 'partner' || (live && points.length > 1) ? 19 : 16;
+        (!focus && cameraPoints.length && (!pointsShown || modeChanged || data.recenter ||
+          (live && following && (cameraPoints.length !== count || outsideViewport(cameraPoints, padding)
+            || canZoomIn(cameraPoints, padding)))))) {
+      const maxZoom = focus ? 17 : data.mode === 'partner' || (live && cameraPoints.length > 1) ? 19 : 16;
       fitting = true;
       try {
-        map.fitBounds(focus ? selected : points, {paddingTopLeft:padding[0], paddingBottomRight:padding[1],
+        map.fitBounds(focus ? selected : cameraPoints, {paddingTopLeft:padding[0], paddingBottomRight:padding[1],
           maxZoom, animate:false});
       } finally {
         fitting = false;
       }
     }
-    count = points.length;
+    count = cameraPoints.length;
     lastHighlight = focus ? highlight.id : '';
-    pointsShown = hasData;
+    pointsShown = cameraPoints.length > 0;
     lastMode = data.mode;
   };
 </script>
