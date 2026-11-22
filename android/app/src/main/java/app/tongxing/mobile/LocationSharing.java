@@ -17,7 +17,6 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
-import java.util.ArrayDeque;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -29,10 +28,8 @@ public final class LocationSharing extends Service implements LocationListener {
     static final String STOP = "app.tongxing.mobile.STOP";
     private static final String CHANNEL = "location_sharing";
     private final LocationCadence cadence = new LocationCadence();
-    private long requestedInterval;
     private long lastFixElapsed;
     private boolean listeningForSteps;
-    private static final int QUEUE_LIMIT = 180;
     private static volatile boolean running;
     private static volatile long lastUploadAt;
     private final Runnable retryProviders = this::subscribe;
@@ -42,7 +39,13 @@ public final class LocationSharing extends Service implements LocationListener {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private final ArrayDeque<JSONObject> pending = new ArrayDeque<>();
+    private PendingPositions pending;
+    private String sharingAccount;
+    private String restoringAccount;
+    private final Runnable retryRestore = this::restore;
+    private final Runnable providerWatchdog = this::checkProviders;
+    private long lastProviderFix;
+    private long lastAccurateGps;
     private LocationManager locations;
     private volatile String shareKey;
     private long lastAccepted;
@@ -68,7 +71,6 @@ public final class LocationSharing extends Service implements LocationListener {
         @Override public void onSensorChanged(android.hardware.SensorEvent event) {
             if (shareKey == null) return;
             cadence.step(SystemClock.elapsedRealtime());
-            updateCadence();
         }
 
         @Override public void onAccuracyChanged(android.hardware.Sensor sensor, int accuracy) {}
@@ -94,11 +96,6 @@ public final class LocationSharing extends Service implements LocationListener {
                 listeningForSteps = false;
             }
         }
-    }
-
-    private void updateCadence() {
-        if (shareKey == null || requestedInterval == cadence.interval(SystemClock.elapsedRealtime())) return;
-        subscribe();
     }
 
     private boolean screenReceiverRegistered;
@@ -162,18 +159,10 @@ public final class LocationSharing extends Service implements LocationListener {
                 stopSelf();
                 return START_NOT_STICKY;
             }
-            String account = api.accountKey();
-            worker.execute(() -> {
-                try {
-                    String key = api.getObject("/sharing").getString("shareKey");
-                    main.post(() -> {
-                        if (shareKey == null && account.equals(api.accountKey()) && !api.sharingNeedsReview()
-                                && !api.pausePending()) startLocation(key);
-                    });
-                } catch (Exception error) {
-                    main.post(() -> { if (shareKey == null) stopSelf(); });
-                }
-            });
+            if (shareKey == null) {
+                restoringAccount = api.accountKey();
+                restore();
+            }
             return START_STICKY;
         }
         String key = intent.getStringExtra(KEY);
@@ -185,11 +174,59 @@ public final class LocationSharing extends Service implements LocationListener {
         return START_STICKY;
     }
 
+    private void restore() {
+        String account = restoringAccount;
+        Api api = Api.get(this);
+        if (account == null || !account.equals(api.accountKey()) || !api.hasSession()
+                || api.pausePending() || api.sharingNeedsReview()) {
+            stopSelf();
+            return;
+        }
+        worker.execute(() -> {
+            try {
+                String key = api.getObject("/sharing").getString("shareKey");
+                main.post(() -> {
+                    if (shareKey == null && account.equals(api.accountKey()) && !api.sharingNeedsReview()
+                            && !api.pausePending()) startLocation(key);
+                });
+            } catch (Exception error) {
+                main.post(() -> {
+                    if (shareKey != null || !account.equals(restoringAccount)) return;
+                    if (error instanceof Api.Failure failure && (failure.status == 401 || failure.status == 409)) {
+                        discardPositions();
+                        stopSelf();
+                    } else {
+                        main.removeCallbacks(retryRestore);
+                        main.postDelayed(retryRestore, 20_000);
+                    }
+                });
+            }
+        });
+    }
+
+    private void checkProviders() {
+        if (shareKey == null) return;
+        if (SystemClock.elapsedRealtime() - lastProviderFix > 90_000) subscribe();
+        main.removeCallbacks(providerWatchdog);
+        main.postDelayed(providerWatchdog, 60_000);
+    }
+
+    private void discardPositions() {
+        if (pending == null) pending = new PendingPositions(this);
+        pending.clear();
+    }
+
     private void startLocation(String key) {
         boolean wasRunning = shareKey != null;
         shareKey = key;
-        pending.clear();
+        restoringAccount = null;
+        main.removeCallbacks(retryRestore);
+        sharingAccount = Api.get(this).accountKey();
+        if (pending == null) pending = new PendingPositions(this);
+        pending.prepare(sharingAccount, key);
         lastAccepted = 0;
+        lastAccurateGps = 0;
+        lastProviderFix = SystemClock.elapsedRealtime();
         lastFixElapsed = 0;
         cadence.reset();
         lastUploadAt = 0;
@@ -202,6 +239,8 @@ public final class LocationSharing extends Service implements LocationListener {
                 main.post(pollFeed);
             }
             subscribe();
+            checkProviders();
+            upload();
         } catch (RuntimeException error) {
             stopSelf();
         }
@@ -221,7 +260,6 @@ public final class LocationSharing extends Service implements LocationListener {
     private void subscribe() {
         locations = getSystemService(LocationManager.class);
         locations.removeUpdates(this);
-        requestedInterval = cadence.interval(SystemClock.elapsedRealtime());
         main.removeCallbacks(retryProviders);
         boolean fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
         boolean coarse = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
@@ -232,7 +270,9 @@ public final class LocationSharing extends Service implements LocationListener {
         for (String provider : providers) {
             try {
                 if (!locations.isProviderEnabled(provider)) continue;
-                locations.requestLocationUpdates(provider, requestedInterval, 0, this);
+                long interval = fine && LocationManager.NETWORK_PROVIDER.equals(provider)
+                        ? LocationCadence.STATIONARY_INTERVAL : LocationCadence.PROVIDER_INTERVAL;
+                locations.requestLocationUpdates(provider, interval, 0, this);
                 registered = true;
                 Location fix = locations.getLastKnownLocation(provider);
                 if (fix == null || !fix.hasAccuracy()
@@ -262,27 +302,30 @@ public final class LocationSharing extends Service implements LocationListener {
         long age = now - fixAt;
         if (age < 0 || age > 60_000 || (lastFixElapsed != 0 && fixAt <= lastFixElapsed)
                 || !location.hasAccuracy() || location.getAccuracy() > 10_000) return;
-        if (lastFixElapsed == 0 || fixAt - lastFixElapsed >= 15_000) {
-            lastFixElapsed = fixAt;
-            cadence.fix(location, now);
-            updateCadence();
+        lastProviderFix = now;
+        if (LocationManager.GPS_PROVIDER.equals(location.getProvider()) && location.getAccuracy() <= 60) {
+            lastAccurateGps = fixAt;
+        } else if (lastAccurateGps > 0 && fixAt - lastAccurateGps < 45_000 && location.getAccuracy() > 60) {
+            return;
         }
-        if (lastAccepted != 0 && now - lastAccepted < cadence.interval(now)) return;
-        lastAccepted = now;
+        lastFixElapsed = fixAt;
+        cadence.fix(location, fixAt);
+        if (lastAccepted != 0 && fixAt - lastAccepted < cadence.interval(fixAt)) return;
+        lastAccepted = fixAt;
         BatteryManager battery = getSystemService(BatteryManager.class);
         int level = battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
         JSONObject sample = Api.json("id", UUID.randomUUID().toString(), "shareKey", shareKey,
                 "latitude", location.getLatitude(), "longitude", location.getLongitude(),
                 "accuracy", location.getAccuracy(), "battery", Math.max(-1, Math.min(100, level)),
                 "charging", battery.isCharging(), "recordedAt", location.getTime());
-        if (pending.size() >= QUEUE_LIMIT) pending.removeFirst();
-        pending.addLast(sample);
+        pending.add(sharingAccount, shareKey, sample);
         upload();
     }
 
     private void upload() {
-        if (uploading || pending.isEmpty() || shareKey == null) return;
-        JSONObject sample = pending.peekFirst();
+        if (uploading || shareKey == null) return;
+        JSONObject sample = pending.next(sharingAccount, shareKey);
+        if (sample == null) return;
         String generation = shareKey;
         uploading = true;
         worker.execute(() -> {
@@ -302,8 +345,6 @@ public final class LocationSharing extends Service implements LocationListener {
                     }
                     if (generation.equals(shareKey) && !api.pausePending() && hasLocationPermission()) {
                         appendDeviceStatus(api, sample, now);
-                        if (api.amapPlaceNames()) sample.put("amapPlaceNames", true);
-                        else sample.remove("amapPlaceNames");
                         api.mutate("POST", "/positions", sample);
                         result = 204;
                         reportAppUsage(api, generation, now);
@@ -322,13 +363,14 @@ public final class LocationSharing extends Service implements LocationListener {
                     upload();
                     return;
                 }
-                if (status == 401 || status == 403 || status == 409) {
+                if (status == 401 || status == 409) {
+                    discardPositions();
                     stopSelf();
                     return;
                 }
                 if (status == 204) lastUploadAt = System.currentTimeMillis();
                 if (status == 204 || status == 400) {
-                    pending.removeFirstOccurrence(sample);
+                    pending.remove(sample);
                     upload();
                 } else {
                     main.removeCallbacks(retry);
@@ -390,6 +432,7 @@ public final class LocationSharing extends Service implements LocationListener {
         Api api = Api.get(this);
         api.withdrawSharing();
         shareKey = null;
+        discardPositions();
         new Thread(() -> {
             try {
                 api.stopSharing();
@@ -405,7 +448,7 @@ public final class LocationSharing extends Service implements LocationListener {
         running = false;
         lastUploadAt = 0;
         shareKey = null;
-        pending.clear();
+        if (pending != null) pending.close();
         main.removeCallbacksAndMessages(null);
         if (locations != null) locations.removeUpdates(this);
         worker.shutdownNow();

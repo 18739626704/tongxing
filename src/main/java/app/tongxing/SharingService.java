@@ -1,6 +1,8 @@
 package app.tongxing;
 
 import app.tongxing.SharingController.*;
+import app.tongxing.AdminController.*;
+import static app.tongxing.AdminController.ACCOUNT_PAGE_SIZE;
 import app.tongxing.store.*;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
@@ -64,7 +66,7 @@ class SharingService {
             throw failure(HttpStatus.FORBIDDEN, "服务器已停止新用户注册");
         }
         if (registration.password().getBytes(StandardCharsets.UTF_8).length > 72) {
-            throw failure(HttpStatus.BAD_REQUEST, "密码太长，请使用 10–64 个英文字母、数字或符号");
+            throw failure(HttpStatus.BAD_REQUEST, "密码超过 72 字节，请减少中文、表情等多字节字符");
         }
         String passwordHash = passwords.encode(registration.password());
         guard.lock();
@@ -139,13 +141,15 @@ class SharingService {
         members.update(null, new UpdateWrapper<Member>().eq("id", self.id)
                 .set("sharing", enabled).set("share_key", shareKey)
                 .set("location_unavailable", !enabled && locationUnavailable));
-        if (!enabled) {
-            clearInsights(self.id);
-            jdbc.update("UPDATE companion_place SET watching = FALSE, armed = FALSE, inside_at = NULL WHERE pair_id = ? AND owner_id <> ?",
-                    self.pairId, self.id);
-            jdbc.update("UPDATE companion_event SET sos_sample_id = NULL WHERE sender_id = ? AND sos_sample_id IS NOT NULL", self.id);
-        }
+        if (!enabled) clearSharedStatuses(self);
         return new ShareState(shareKey);
+    }
+
+    private void clearSharedStatuses(Member member) {
+        clearInsights(member.id);
+        jdbc.update("UPDATE companion_place SET watching = FALSE, armed = FALSE, inside_at = NULL WHERE pair_id = ? AND owner_id <> ?",
+                member.pairId, member.id);
+        jdbc.update("UPDATE companion_event SET sos_sample_id = NULL WHERE sender_id = ? AND sos_sample_id IS NOT NULL", member.id);
     }
 
     private void checkPair(Member self, UUID pairId) {
@@ -214,22 +218,164 @@ class SharingService {
         Member self = current(username);
         Member partner = partnerOf(self);
         long now = System.currentTimeMillis();
-        return new Overview(status(self, now), partner == null ? null : status(partner, now), now, self.pairId, new MapConfig(amapAndroidKey, placeNames.configured()));
+        return new Overview(status(self, now), partner == null ? null : status(partner, now), now, self.pairId,
+                new MapConfig(amapAndroidKey, placeNames.configured()));
+    }
+
+    public List<Account> adminAccounts(String search, String after) {
+        QueryWrapper<Member> query = new QueryWrapper<Member>()
+                .select("id", "username", "display_name", "pair_id", "disabled", "sharing");
+        if (!search.isBlank()) {
+            String literal = search.toLowerCase(Locale.ROOT)
+                    .replace("!", "!!").replace("%", "!%").replace("_", "!_");
+            query.apply("(LOWER(username) LIKE {0} ESCAPE '!' OR LOWER(display_name) LIKE {0} ESCAPE '!')",
+                    "%" + literal + "%");
+        }
+        if (!after.isEmpty()) query.gt("username", after);
+        return members.selectList(query.orderByAsc("username").last("LIMIT " + (ACCOUNT_PAGE_SIZE + 1))).stream()
+                .map(SharingService::account).toList();
+    }
+
+    @Transactional
+    public Detail adminDetail(String id) {
+        guard.lock();
+        Member target = adminTarget(id);
+        long now = System.currentTimeMillis();
+        audit("VIEW_STATUS", id);
+        return new Detail(account(target), now, status(target, now, true), appUsageSnapshot(target), adminPartner(partnerOf(target)));
+    }
+
+    @Transactional
+    public List<Point> adminRoute(String id, long from, long to) {
+        validateRouteRange(from, to);
+        guard.lock();
+        adminTarget(id);
+        audit("VIEW_ROUTE", id);
+        return routePoints(new QueryWrapper<PositionSample>().eq("member_id", id), from, to);
+    }
+
+    @Transactional
+    public List<Activity> adminActivity(String id, Long before) {
+        guard.lock();
+        adminTarget(id);
+        audit("VIEW_ACTIVITY", id);
+        return jdbc.query("""
+                SELECT id, kind, body, created_at, received_at, viewed_at FROM companion_event
+                WHERE sender_id = ? AND created_at >= ? AND id < ? ORDER BY id DESC LIMIT 51
+                """, (row, index) -> new Activity(row.getLong("id"), row.getString("kind"), row.getString("body"),
+                row.getLong("created_at"), row.getObject("received_at", Long.class), row.getObject("viewed_at", Long.class)),
+                id, System.currentTimeMillis() - RETENTION, before == null ? Long.MAX_VALUE : before);
+    }
+
+    @Transactional
+    public Conversation adminConversation(String id, Long before) {
+        guard.lock();
+        Member target = adminTarget(id);
+        Member partner = partnerOf(target);
+        if (partner == null) return new Conversation(null, List.of(), null);
+        audit("VIEW_CONVERSATION", id);
+        List<ConversationMessage> messages = jdbc.query("""
+                SELECT e.id, m.username, m.display_name, e.sender_id, e.body, e.created_at
+                FROM companion_event e JOIN member m ON m.id = e.sender_id
+                WHERE e.pair_id = ? AND e.sender_id IN (?, ?) AND e.kind = 'MESSAGE'
+                    AND e.created_at >= ? AND e.id < ? ORDER BY e.id DESC LIMIT 51
+                """, (row, index) -> new ConversationMessage(row.getLong("id"), row.getString("username"),
+                row.getString("display_name"), id.equals(row.getString("sender_id")),
+                row.getString("body"), row.getLong("created_at")),
+                target.pairId, id, partner.id, System.currentTimeMillis() - RETENTION,
+                before == null ? Long.MAX_VALUE : before);
+        return messages.size() <= 50 ? new Conversation(adminPartner(partner), messages, null)
+                : new Conversation(adminPartner(partner), messages.subList(0, 50), messages.get(49).id());
+    }
+
+    private static Partner adminPartner(Member member) {
+        return member == null ? null : new Partner(member.id, member.username, member.displayName);
+    }
+
+    @Transactional
+    public List<SavedLocation> adminPlaces(String id) {
+        guard.lock();
+        adminTarget(id);
+        audit("VIEW_PLACES", id);
+        return jdbc.query("""
+                SELECT name, latitude, longitude, watching FROM companion_place
+                WHERE owner_id = ? ORDER BY name, id
+                """, (row, index) -> new SavedLocation(row.getString("name"), row.getDouble("latitude"),
+                row.getDouble("longitude"), row.getBoolean("watching")), id);
+    }
+
+    @Transactional
+    public void adminDisable(String id, boolean disabled) {
+        guard.lock();
+        Member target = adminTarget(id);
+        if (target.disabled == disabled) return;
+        if (disabled) {
+            jdbc.update("""
+                    UPDATE member SET disabled = TRUE, session_version = session_version + 1,
+                        sharing = FALSE, share_key = NULL, location_unavailable = FALSE
+                    WHERE id = ?
+                    """, id);
+            invitations.delete(new QueryWrapper<Invitation>().eq("member_id", id));
+            jdbc.update("DELETE FROM push_device WHERE member_id = ?", id);
+            clearSharedStatuses(target);
+        } else {
+            jdbc.update("UPDATE member SET disabled = FALSE WHERE id = ?", id);
+        }
+        audit(disabled ? "DISABLE_ACCOUNT" : "ENABLE_ACCOUNT", id);
+    }
+
+    public List<AuditEntry> adminAudit(String username, Long from, Long to) {
+        if (from != null || to != null) {
+            if (from == null || to == null) throw failure(HttpStatus.BAD_REQUEST, "请选择完整日期");
+            validateRouteRange(from, to);
+        }
+        return jdbc.query("""
+                SELECT audit.action, audit.target_id, member.username, audit.occurred_at
+                FROM admin_audit audit LEFT JOIN member ON member.id = audit.target_id
+                WHERE (? = '' OR member.username = ?) AND audit.occurred_at >= ? AND audit.occurred_at < ?
+                ORDER BY audit.id DESC LIMIT 100
+                """, (row, index) -> new AuditEntry(row.getString("action"), row.getString("target_id"),
+                row.getString("username"), row.getLong("occurred_at")),
+                username, username, from == null ? 0L : from, to == null ? Long.MAX_VALUE : to);
+    }
+
+    private void audit(String action, String id) {
+        jdbc.update("INSERT INTO admin_audit(action, target_id, occurred_at) VALUES (?, ?, ?)",
+                action, id, System.currentTimeMillis());
+    }
+
+    private Member adminTarget(String id) {
+        Member target = members.selectById(id);
+        if (target == null) throw failure(HttpStatus.NOT_FOUND, "账号不存在");
+        return target;
+    }
+
+    private static Account account(Member member) {
+        return new Account(member.id, member.username, member.displayName, member.disabled, member.pairId != null,
+                member.sharing);
     }
 
     @Transactional
     public List<Point> route(String username, boolean partner, long from, long to) {
-        long now = System.currentTimeMillis();
-        if (from < 0 || from >= to || to - from > 25 * 60 * 60 * 1000L) {
-            throw failure(HttpStatus.BAD_REQUEST, "一次最多查看一天的轨迹");
-        }
+        validateRouteRange(from, to);
         guard.lock();
         Member self = current(username);
         Member target = partner ? partnerOf(self) : self;
         if (target == null || target.pairId == null || (partner && !target.sharing)) return List.of();
-        List<PositionSample> route = samples.selectList(query(target)
+        return routePoints(query(target), from, to);
+    }
+
+    private static void validateRouteRange(long from, long to) {
+        if (from < 0 || from >= to || to - from > 25 * 60 * 60 * 1000L) {
+            throw failure(HttpStatus.BAD_REQUEST, "一次最多查看一天的轨迹");
+        }
+    }
+
+    private List<Point> routePoints(QueryWrapper<PositionSample> query, long from, long to) {
+        long now = System.currentTimeMillis();
+        List<PositionSample> route = samples.selectList(query
                 .ge("recorded_at", Math.max(from, now - RETENTION)).lt("recorded_at", to)
-                .orderByDesc("recorded_at", "id").last("LIMIT 5000"));
+                .orderByDesc("recorded_at", "id").last("LIMIT 7500"));
         Collections.reverse(route);
         return route.stream().map(SharingService::point).toList();
     }
@@ -257,6 +403,7 @@ class SharingService {
         jdbc.update("DELETE FROM companion_event WHERE created_at < ?", now - RETENTION);
         jdbc.update("DELETE FROM push_device WHERE refreshed_at < ?", now - RETENTION);
         jdbc.update("DELETE FROM app_usage_snapshot WHERE recorded_at < ?", now - DAY);
+        jdbc.update("DELETE FROM admin_audit WHERE occurred_at < ?", now - RETENTION);
     }
 
     @Transactional
@@ -599,6 +746,10 @@ class SharingService {
         if (partner == null || !partner.sharing || !partner.appUsageEnabled) {
             throw failure(HttpStatus.NOT_FOUND, "对方未共享应用使用明细");
         }
+        return appUsageSnapshot(partner);
+    }
+
+    private AppUsageSnapshot appUsageSnapshot(Member member) {
         var rows = jdbc.query("""
                 SELECT usage_date, recorded_at, apps_json FROM app_usage_snapshot
                 WHERE member_id = ? AND recorded_at >= ?
@@ -610,7 +761,7 @@ class SharingService {
             } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
                 throw new IllegalStateException("Could not read application totals", error);
             }
-        }, partner.id, System.currentTimeMillis() - DAY);
+        }, member.id, System.currentTimeMillis() - DAY);
         return rows.isEmpty() ? new AppUsageSnapshot(null, 0, List.of()) : rows.getFirst();
     }
 
@@ -692,6 +843,35 @@ class SharingService {
     }
 
     @Transactional
+    public String changeDisplayName(String username, String value) {
+        String name = value.strip();
+        if (name.isBlank() || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw failure(HttpStatus.BAD_REQUEST, "请输入单行显示名称");
+        }
+        guard.lock();
+        Member member = current(username);
+        jdbc.update("UPDATE member SET display_name = ? WHERE id = ?", name, member.id);
+        return name;
+    }
+
+    @Transactional
+    public void changePassword(String username, SharingController.PasswordChange change) {
+        guard.lock();
+        Member member = current(username);
+        String current = change.currentPassword();
+        String next = change.newPassword();
+        if (current.getBytes(StandardCharsets.UTF_8).length > 72 || !passwords.matches(current, member.passwordHash)) {
+            throw failure(HttpStatus.BAD_REQUEST, "当前密码不正确");
+        }
+        if (next.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw failure(HttpStatus.BAD_REQUEST, "新密码不能超过 72 字节");
+        }
+        if (next.equals(current)) throw failure(HttpStatus.BAD_REQUEST, "新密码须与当前密码不同");
+        jdbc.update("UPDATE member SET password_hash = ?, session_version = session_version + 1 WHERE id = ?",
+                passwords.encode(next), member.id);
+    }
+
+    @Transactional
     public void deleteAccount(String username, String password) {
         Member member = current(username);
         if (!passwords.matches(password, member.passwordHash)) throw failure(HttpStatus.FORBIDDEN, "密码不正确");
@@ -705,27 +885,37 @@ class SharingService {
     }
 
     private Status status(Member member, long now) {
+        return status(member, now, false);
+    }
+
+    private Status status(Member member, long now, boolean administrator) {
         boolean sharing = member.sharing && member.pairId != null;
-        PositionSample latest = sharing ? lastPoint(member, now) : null;
-        DeviceStatus device = sharing && member.deviceStatusEnabled && member.deviceStatusAt != null
+        boolean showStored = administrator || sharing;
+        PositionSample latest = administrator ? latestPoint(new QueryWrapper<PositionSample>().eq("member_id", member.id), now)
+                : sharing ? lastPoint(member, now) : null;
+        DeviceStatus device = showStored && (administrator || member.deviceStatusEnabled) && member.deviceStatusAt != null
                 ? new DeviceStatus(member.deviceModel, visibleNetwork(member.networkType), member.deviceStatusAt,
                         member.deviceUnlockedAt, member.deviceMotion) : null;
-        var journeyState = sharing && member.journeyEnabled ? journeyState(member) : null;
+        var journeyState = showStored && (administrator || member.journeyEnabled) ? journeyState(member) : null;
         JourneyStatus journey = journeyState != null && now - journeyState.lastAt() <= 240_000
                 && (journeyState.stopped() || journeyState.inTrip())
                 ? new JourneyStatus(journeyState.stopped() ? "STOPPED" : "TRAVELLING",
                         journeyState.anchor().at(), journeyState.lastAt()) : null;
-        ScreenStatus screen = sharing && member.liveScreenEnabled && member.liveScreenAt != null
+        ScreenStatus screen = showStored && (administrator || member.liveScreenEnabled) && member.liveScreenAt != null
                 ? new ScreenStatus(ScreenState.valueOf(member.liveScreenState), member.liveScreenAt) : null;
         return new Status(member.displayName, sharing, latest == null ? null : point(latest),
-                sharing && member.usageEnabled ? member.screenMinutes : null,
-                sharing && member.usageEnabled ? member.screenDate : null, member.usageEnabled,
+                showStored && (administrator || member.usageEnabled) ? member.screenMinutes : null,
+                showStored && (administrator || member.usageEnabled) ? member.screenDate : null, member.usageEnabled,
                 member.appUsageEnabled, member.deviceStatusEnabled, device,
                 member.journeyEnabled, journey, member.liveScreenEnabled, screen, member.locationUnavailable);
     }
 
     private PositionSample lastPoint(Member member, long now) {
-        List<PositionSample> latest = samples.selectList(query(member).ge("recorded_at", now - RETENTION)
+        return latestPoint(query(member), now);
+    }
+
+    private PositionSample latestPoint(QueryWrapper<PositionSample> query, long now) {
+        List<PositionSample> latest = samples.selectList(query.ge("recorded_at", now - RETENTION)
                 .orderByDesc("recorded_at", "id").last("LIMIT 1"));
         return latest.isEmpty() ? null : latest.getFirst();
     }
@@ -749,7 +939,7 @@ class SharingService {
 
     private Member current(String username) {
         Member member = findMember(username);
-        if (member == null) throw failure(HttpStatus.UNAUTHORIZED, "请重新登录");
+        if (member == null || member.disabled) throw failure(HttpStatus.UNAUTHORIZED, "请重新登录");
         return member;
     }
 
@@ -759,7 +949,7 @@ class SharingService {
     }
 
     private static Member requireUnpaired(Member member) {
-        if (member == null || member.pairId != null) throw failure(HttpStatus.CONFLICT, "已有绑定关系");
+        if (member == null || member.disabled || member.pairId != null) throw failure(HttpStatus.CONFLICT, "已有绑定关系");
         return member;
     }
 

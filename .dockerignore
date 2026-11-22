@@ -3,3 +3,9 @@
 !pom.xml
 !src/
 !src/**
+!android/
+!android/app/
+!android/app/src/
+!android/app/src/main/
+!android/app/src/main/assets/
+!android/app/src/main/assets/leaflet*

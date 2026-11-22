@@ -49,6 +49,117 @@ public class MainActivityTest {
     }
 
     @Test
+    public void registrationExplainsRulesAndMarksInvalidInputs() {
+        Api.get(RuntimeEnvironment.getApplication()).clearSession();
+        try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            View root = controller.get().findViewById(android.R.id.content);
+            text(root, "创建账号").performClick();
+            assertNotNull(text(root, "3–32 位，可用英文字母、数字和下划线，字母会转为小写。"));
+            List<EditText> inputs = views(root, EditText.class);
+            inputs.get(0).setText("http://share.example.com");
+            inputs.get(1).setText("a!");
+            inputs.get(2).setText("123");
+            text(root, "注册并登录").performClick();
+            assertTrue(inputs.get(0).getError().toString().contains("HTTPS"));
+            assertTrue(inputs.get(1).getError().toString().contains("3–32"));
+            assertTrue(inputs.get(2).getError().toString().contains("10–64"));
+        }
+    }
+
+    @Test
+    public void offlineLogoutClearsTheSessionWithoutWaitingForARequest() throws Exception {
+        var api = Api.get(RuntimeEnvironment.getApplication());
+        try (MockWebServer server = new MockWebServer()) {
+            AtomicBoolean refreshStarted = new AtomicBoolean();
+            server.setDispatcher(new Dispatcher() {
+                @Override public MockResponse dispatch(RecordedRequest request) {
+                    return switch (request.getRequestUrl().encodedPath()) {
+                        case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
+                        case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=test; Path=/; HttpOnly");
+                        case "/api/overview" -> {
+                            refreshStarted.set(true);
+                            yield new MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE);
+                        }
+                        default -> reply(503, "");
+                    };
+                }
+            });
+            server.start();
+            api.authenticate("http://127.0.0.1:" + server.getPort(), "offline", "TestPassword123", false);
+            try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+                View root = controller.get().findViewById(android.R.id.content);
+                await(refreshStarted::get);
+                text(root, "设置").performClick();
+                assertNotNull(text(root, "登录名 · offline"));
+                text(root, "退出登录").performClick();
+                assertNotNull(text(root, "登录"));
+                assertFalse(api.hasSession());
+                assertEquals("", api.savedUsername());
+            }
+        }
+    }
+
+    @Test
+    public void walkingWakesDenseReportingWithoutTheStepSensor() {
+        LocationCadence cadence = new LocationCadence();
+        Location first = new Location(LocationManager.GPS_PROVIDER);
+        first.setAccuracy(8);
+        cadence.fix(first, 1_000);
+        assertEquals(LocationCadence.STATIONARY_INTERVAL, cadence.interval(1_000));
+
+        Location walking = new Location(first);
+        walking.setLatitude(.00019);
+        cadence.fix(walking, 16_000);
+        assertEquals(LocationCadence.MOVING_INTERVAL, cadence.interval(16_000));
+        assertEquals(LocationCadence.STATIONARY_INTERVAL, cadence.interval(137_000));
+    }
+
+    @Test
+    public void offlineSamplesSurviveReopeningAndAreScopedToTheSharingSession() {
+        var app = RuntimeEnvironment.getApplication();
+        String account = "https://share.example.com#alice";
+        JSONObject sample = Api.json("id", "one", "recordedAt", System.currentTimeMillis());
+        try (var queue = new PendingPositions(app)) {
+            queue.prepare(account, "generation-a");
+            queue.add(account, "generation-a", sample);
+        }
+        try (var queue = new PendingPositions(app)) {
+            assertNull(queue.next(account, "generation-b"));
+            assertEquals("one", queue.next(account, "generation-a").optString("id"));
+            queue.prepare(account, "generation-b");
+            assertNull(queue.next(account, "generation-a"));
+        }
+    }
+
+    @Test
+    public void scannerOpensWithPermissionPendingAndCanReturnToManualInput() {
+        var app = RuntimeEnvironment.getApplication();
+        shadowOf(app).denyPermissions(Manifest.permission.CAMERA);
+        Intent intent = new com.journeyapps.barcodescanner.ScanOptions()
+                .setCaptureActivity(PairScanActivity.class)
+                .setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
+                .setOrientationLocked(false).setBeepEnabled(false).createScanIntent(app);
+        try (var controller = Robolectric.buildActivity(PairScanActivity.class, intent).setup()) {
+            var activity = controller.get();
+            View root = activity.findViewById(android.R.id.content);
+            assertNotNull(text(root, "将同行绑定二维码放入取景框"));
+            assertFalse(activity.isFinishing());
+            text(root, "手动输入").performClick();
+            assertEquals(android.app.Activity.RESULT_OK, shadowOf(activity).getResultCode());
+            assertTrue(shadowOf(activity).getResultIntent().getBooleanExtra(PairScanActivity.MANUAL, false));
+            assertTrue(activity.isFinishing());
+        }
+    }
+
+    @Test
+    public void scannerAcceptsOnlyValidTongxingPairCodes() {
+        assertEquals("0123456789ABCDEF", PairQr.scan("tongxing:pair:0123456789abcdef"));
+        assertEquals("0123456789ABCDEF", PairQr.code(" 0123456789abcdef "));
+        assertEquals("", PairQr.scan("https://share.example.com/0123456789abcdef"));
+        assertEquals("", PairQr.scan("tongxing:pair:0123456789abcdeg"));
+    }
+
+    @Test
     @Config(qualifiers = "w360dp-h740dp")
     public void signsInUpdatesPartnerStatusAndShowsDailyTrack() throws Exception {
         Api.get(RuntimeEnvironment.getApplication()).clearSession();
@@ -80,7 +191,7 @@ public class MainActivityTest {
                     String location = "{\"latitude\":34.75,\"longitude\":113.65,\"accuracy\":8,"
                             + "\"battery\":81,\"charging\":true,\"recordedAt\":" + now + "}";
                     if (path.equals("/api/overview")) {
-                        return reply(200, "{\"self\":{\"displayName\":\"Alice\",\"sharing\":false},"
+                        return reply(200, "{\"self\":{\"displayName\":\"Alice\",\"sharing\":false,\"lastLocation\":" + location + "},"
                                 + "\"partner\":{\"displayName\":\"Bob\",\"sharing\":true,\"lastLocation\":" + location
                                 + "},\"serverTime\":" + now + "}");
                     }
@@ -123,16 +234,27 @@ public class MainActivityTest {
                         .anyMatch(view -> view.getText().toString().contains("位置 刚刚更新 · 电量 81%")));
                 assertTrue(Api.get(RuntimeEnvironment.getApplication()).hasSession());
                 var web = views(root, android.webkit.WebView.class).get(0);
+                assertEquals("https://appassets.androidplatform.net/assets/map.html", shadowOf(web).getLastLoadedUrl());
                 assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().width);
                 assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().height);
                 assertTrue(web.getParent() instanceof android.widget.FrameLayout);
+                assertFalse(text(root, "应用时长").isShown());
+                text(root, "Bob").performClick();
+                var focused = org.robolectric.util.ReflectionHelpers.<JSONObject>getField(activity, "mapData");
+                assertEquals("partner", focused.optString("mode"));
+                assertEquals(2, focused.getJSONArray("points").length());
+                assertFalse(focused.getJSONArray("points").getJSONObject(0).getBoolean("partner"));
+                assertTrue(focused.getJSONArray("points").getJSONObject(1).getBoolean("partner"));
+                text(root, "看双方").performClick();
+                assertEquals("live", org.robolectric.util.ReflectionHelpers.<JSONObject>getField(activity, "mapData").optString("mode"));
+                text(root, "展开").performClick();
                 text(root, "应用时长").performClick();
                 await(() -> org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() != null);
                 var usage = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
                 assertNotNull(text(usage.getWindow().getDecorView(), "地图应用"));
                 usage.dismiss();
-                assertEquals(1, text(root, "回中心").getMaxLines());
-                assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT, text(root, "回中心").getLayoutParams().width);
+                assertEquals(1, text(root, "看双方").getMaxLines());
+                assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT, text(root, "看双方").getLayoutParams().width);
                 assertEquals(1, text(root, "收起").getMaxLines());
                 text(root, "收起").performClick();
                 assertNotNull(text(root, "展开"));
@@ -164,6 +286,9 @@ public class MainActivityTest {
 
                 text(root, "设置").performClick();
                 assertNotNull(text(root, "权限与共享"));
+                assertNotNull(text(root, "修改密码"));
+                assertNotNull(text(root, "编辑显示名称"));
+                assertNull(text(root, "启用高德地点名称"));
                 assertNull(text(root, "查看我的应用使用明细"));
                 assertNull(text(root, "饮水和就寝提醒"));
                 assertNull(text(root, "清除我的轨迹"));
@@ -280,7 +405,8 @@ public class MainActivityTest {
                         case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
                         case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=active; Path=/; HttpOnly");
                         case "/api/overview" -> reply(200, "{\"self\":{\"sharing\":" + active.get()
-                                + "},\"partner\":{\"displayName\":\"Bob\",\"sharing\":false}}");
+                                + "},\"partner\":{\"displayName\":\"Bob\",\"sharing\":false},"
+                                + "\"pairId\":\"27d5709f-eacb-4236-ab46-84d246764669\"}");
                         case "/api/sharing" -> {
                             sharingMethods.add(request.getMethod());
                             yield reply(200, "{\"shareKey\":\"" + key + "\"}");
@@ -308,18 +434,20 @@ public class MainActivityTest {
                 assertEquals(List.of("GET"), new ArrayList<>(sharingMethods));
             }
             active.set(false);
+            Api.get(app).withdrawSharing();
+            Api.get(app).stopSharing();
+            sharingMethods.clear();
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
                 View root = controller.get().findViewById(android.R.id.content);
-                await(() -> text(root, "请在「权限与共享」确认共享范围") != null);
-                assertNull(text(root, "开始共享"));
-                assertEquals(List.of("GET"), new ArrayList<>(sharingMethods));
+                await(() -> text(root, "已暂停共享 · 点击恢复") != null);
+                assertTrue(sharingMethods.isEmpty());
                 assertNull(shadowOf(app).getNextStartedService());
             }
         }
     }
 
     @Test
-    public void startsAutomaticallyWhenPairWasAcceptedAndLocationIsGranted() throws Exception {
+    public void startsAutomaticallyWhenPairedAndLocationIsGranted() throws Exception {
         String pair = "27d5709f-eacb-4236-ab46-84d246764669";
         String key = "13a7397b-7c39-4e86-9309-11d530f921ac";
         AtomicReference<String> startBody = new AtomicReference<>();
@@ -345,12 +473,6 @@ public class MainActivityTest {
             shadowOf(location).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
             Api api = Api.get(app);
             api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
-            api.acceptUnifiedConsent(pair);
-            api.requestSuspension();
-            api.stopSharing();
-            assertFalse(api.sharingNeedsReview());
-            assertTrue(api.sharingSetupAccepted(pair));
-            startBody.set(null);
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
                 MainActivity activity = controller.get();
                 View root = activity.findViewById(android.R.id.content);
@@ -371,7 +493,7 @@ public class MainActivityTest {
     }
 
     @Test
-    public void unifiedConsentEnablesJourneyAndScreenWithoutSeparateToggles() throws Exception {
+    public void pairedAccountsEnableJourneyAndScreenWithoutExtraConsent() throws Exception {
         String pair = "27d5709f-eacb-4236-ab46-84d246764669";
         var journey = new AtomicBoolean();
         var screen = new AtomicBoolean();
@@ -401,16 +523,8 @@ public class MainActivityTest {
             api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
 
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
-                await(() -> org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() != null);
-                var dashboard = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
-                assertFalse(journey.get());
-                assertFalse(screen.get());
-                text(dashboard.getWindow().getDecorView(), "确认权限与共享").performClick();
-                org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
-                        .getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
-                await(() -> api.unifiedConsentAccepted(pair));
                 await(() -> journey.get() && screen.get());
-                await(() -> text(dashboard.getWindow().getDecorView(), "伴侣屏幕状态  ·  已启用") != null);
+                assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
             }
         }
     }

@@ -22,6 +22,9 @@ openssl rand -hex 24
 | `REGISTRATION_ENABLED` | 默认 `true`，设为 `false` 可关闭新增注册 |
 | `AMAP_ANDROID_KEY` | 可选，标准 APK 使用的 Android 平台地图 SDK Key |
 | `AMAP_WEB_SERVICE_KEY` | 可选，高德 Web 服务 Key，用于到达或离开事件的地点名称 |
+| `ADMIN_USERNAME` | 可选，独立的控制台管理员登录名 |
+| `ADMIN_PASSWORD_HASH` | 可选，管理员密码的 BCrypt 哈希，见下文 |
+| `ADMIN_INITIAL_PASSWORD` | 可选，临时管理员密码，10–64 个字符且最多 72 字节 |
 | `FCM_SERVICE_ACCOUNT_JSON` | 可选，开启 FCM 的 Firebase 服务账号 JSON，保存为一行 |
 
 ```bash
@@ -42,9 +45,9 @@ curl -fsS https://share.example.com/api/health
 | `DB_USER` | MySQL 用户 |
 | `DB_PASSWORD` | MySQL 密码 |
 | `REGISTRATION_ENABLED` | 可选，默认允许注册 |
-| 地图与推送 | 参照上表的可选变量 |
+| 地图、推送与管理员 | 参照上表的可选变量 |
 
-已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.2.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
+已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.9.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
 
 ## 手机注册
 
@@ -65,8 +68,22 @@ curl -fsS https://share.example.com/api/health
 
 参考 [Android 地图 SDK 申请指引](https://lbs.amap.com/api/android-sdk/guide/create-project/get-key) 和 [Web 服务 Key 申请指引](https://lbs.amap.com/api/webservice/guide/create-project/get-key)。
 
+### Web 管理控制台
+
+设置 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD_HASH` 后重启服务，通过服务域名的 `/admin/` 登录。该管理员账号由环境变量管理，与手机端注册的账号独立。可以用 `htpasswd -nBC 12 admin` 交互式生成 BCrypt 哈希，将输出中用户名后面的哈希填入 `ADMIN_PASSWORD_HASH`。Docker Compose 的 `.env` 里请用单引号包住哈希，以便按字面读取其中的美元符号。通过部署平台变量界面设置时，直接填哈希值。
+
+首次初始化可以设置 `ADMIN_INITIAL_PASSWORD`。生成独立随机密码并在部署环境中配置，登录名默认为 `admin`，也可通过 `ADMIN_USERNAME` 自定义。第一次用临时密码登录后会直接进入改密页。修改后的密码哈希保存在数据库，旧密码和旧会话随即失效。原 `ADMIN_PASSWORD_HASH` 配置仍可使用。
+
+管理员可以查询用户账号、禁用或恢复账号，也可以查看服务器保留的位置、足迹、设备状态、应用时长、动态和地点记录。禁用会使账号的已有会话失效并停止共享。控制台每 15 秒刷新当前用户的位置及状态，实际位置更新时间取决于手机上报。审计记录保留 30 天。
+
 ### Firebase 系统推送
 
 此配置适用于需要在应用退到后台时提高消息提醒及时性的部署。基础 APK 的消息依靠同步获取，后台受 Android 限制时可能延迟。兼容手机、通知权限以及系统的锁屏通知设置也会影响显示。
 
 在 Firebase 控制台创建项目并注册 Android 应用 `app.tongxing.mobile`。下载 Android 应用的 `google-services.json` 用于[客户端构建](development.md#可选构建)。为同一个 Firebase 项目创建有发送 FCM 消息权限的服务账号，生成凭据并将完整 JSON 以单行写入服务器上的 `FCM_SERVICE_ACCOUNT_JSON`。请通过部署平台的私有变量界面配置生产凭据。不要上传 JSON 或在日志中打印它。
+
+管理端足迹使用 OpenStreetMap 街道底图，无需地图 Key。底图由浏览器加载，瓦片不可用时仍可查看足迹和采样坐标。Android SDK Key 和 Web 服务 Key 按前述各自用途配置。
+
+管理台的「用户管理」可用登录名或显示名称的任意片段搜索，每页 20 个账号。用户详情的「足迹」按北京时间选日期，时间轴区分移动、停留、定位中断和未能判定的时段。点击移动或停留记录可以在地图上定位，也可以展开原始采样坐标。
+
+「概览」显示当前绑定对象的显示名称和登录名。「对话」分页查看当前绑定双方仍在保留期内的文字消息。管理端查看对话会写入操作日志。解绑和历史清理遵循现有的数据删除规则。

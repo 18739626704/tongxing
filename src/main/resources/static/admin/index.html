@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>同行管理台</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <link rel="stylesheet" href="/admin/vendor/leaflet.css">
+  <script src="/admin/vendor/leaflet.js" defer></script>
+  <script src="/admin/route-timeline.js" defer></script>
+  <script src="/admin/route-map.js" defer></script>
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="shell top-inner">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">同</span><span>同行管理台</span></div>
+      <nav id="primary-nav" class="main-nav" aria-label="管理台导航" hidden>
+        <button id="nav-users" type="button" aria-current="page">用户管理</button>
+        <button id="nav-audit" type="button">操作日志</button>
+      </nav>
+      <div id="identity" class="identity" hidden>
+        <details id="admin-menu" class="admin-menu">
+          <summary id="administrator"></summary>
+          <div class="menu">
+            <button id="change-password" type="button" hidden>修改密码</button>
+            <button id="logout" type="button">退出登录</button>
+          </div>
+        </details>
+      </div>
+    </div>
+  </header>
+  <main class="shell">
+    <p id="notice" class="notice" role="status" hidden></p>
+    <section class="panel signin" id="signin" hidden>
+      <h1>管理员登录</h1>
+      <form id="login">
+        <label>账号<input name="username" autocomplete="username" maxlength="128" required></label>
+        <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="primary">登录</button>
+      </form>
+    </section>
+    <section class="panel signin" id="password-panel" hidden>
+      <h1>修改管理员密码</h1>
+      <p>新密码请使用 10–64 个字符。改密后请重新登录。</p>
+      <form id="password-form">
+        <label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <label>新密码<input name="newPassword" type="password" autocomplete="new-password" required minlength="10" maxlength="64"></label>
+        <label>确认新密码<input name="confirmation" type="password" autocomplete="new-password" required maxlength="64"></label>
+        <button class="primary">保存密码</button>
+      </form>
+      <button id="password-back" class="plain" type="button" hidden>返回管理台</button>
+    </section>
+    <div id="console" hidden>
+      <section id="users-page" aria-labelledby="users-title">
+        <div class="page-title"><h1 id="users-title">用户管理</h1></div>
+        <div id="workspace" class="workspace">
+          <section class="panel directory" aria-labelledby="accounts-title">
+            <h2 id="accounts-title">账号列表</h2>
+            <form id="search" class="actions search">
+              <input id="query" type="search" placeholder="输入部分登录名或显示名称" aria-label="搜索用户" maxlength="32">
+              <button type="submit" aria-label="搜索用户">搜索</button>
+            </form>
+            <p id="list-status" class="state-line" role="status"></p>
+            <ul id="accounts" class="accounts"></ul>
+            <div id="account-pagination" class="pager" aria-label="账号列表分页" hidden>
+              <button id="previous" type="button" disabled>上一页</button>
+              <span id="account-page-number"></span>
+              <button id="next" type="button" disabled>下一页</button>
+            </div>
+          </section>
+          <section class="panel detail">
+            <button id="back-to-accounts" class="plain mobile-back" type="button">‹ 返回账号列表</button>
+            <p id="selection-status" class="empty-state" role="status">从账号列表选择用户</p>
+            <div id="details" hidden>
+              <div class="person">
+                <span id="person-avatar" class="avatar" aria-hidden="true"></span>
+                <div class="person-name">
+                  <h2 id="person-name" tabindex="-1"></h2>
+                  <p id="person-username"></p>
+                </div>
+                <span id="person-status" class="chip"></span>
+              </div>
+              <nav class="detail-tabs" aria-label="用户详情">
+                <button type="button" data-detail-tab="overview" aria-pressed="true">概览</button>
+                <button type="button" data-detail-tab="route" aria-pressed="false">足迹</button>
+                <button type="button" data-detail-tab="records" aria-pressed="false">动态与地点</button>
+                <button type="button" data-detail-tab="conversation" aria-pressed="false">对话</button>
+              </nav>
+              <div class="detail-page" data-detail-page="overview">
+                <div class="data-grid">
+                  <section class="data-card"><h3>最近位置</h3><p id="location-status" class="state-line" role="status"></p><button id="show-recent-route" type="button" hidden>查看当天足迹</button><dl id="location" class="facts"></dl></section>
+                  <section class="data-card"><h3>设备状态</h3><p id="device-status" class="state-line"></p><dl id="device" class="facts"></dl></section>
+                </div>
+                <details class="data-card expandable" id="usage" hidden><summary>应用使用时长</summary><ul id="apps" class="record-list"></ul></details>
+                <section class="data-card account-section">
+                  <div><h3>账号信息</h3><dl id="profile" class="facts"></dl></div>
+                  <button id="set-account-state" type="button"></button>
+                </section>
+              </div>
+              <section class="detail-page" data-detail-page="route" hidden>
+                <form id="route-form" class="actions route-form" hidden>
+                  <label>足迹日期（北京时间）<input id="route-date" type="date" required></label>
+                  <div class="day-controls">
+                    <button id="route-previous-day" type="button">前一天</button>
+                    <button id="route-next-day" type="button">后一天</button>
+                  </div>
+                </form>
+                <p id="route-status" class="state-line" role="status">选择日期查看足迹</p>
+                <dl id="route-summary" class="route-summary" hidden></dl>
+                <div id="route-map-card" class="route-map-card" hidden>
+                  <div id="route-map" role="region" aria-label="足迹地图"></div>
+                  <div class="map-footer">
+                    <p id="basemap-status" role="status"></p>
+                    <button id="fit-route" type="button">查看全程</button>
+                  </div>
+                </div>
+                <section id="timeline" class="data-card" aria-labelledby="timeline-heading" hidden>
+                  <h3 id="timeline-heading">足迹时间轴</h3>
+                  <p id="timeline-status" class="state-line" role="status"></p>
+                  <ol id="timeline-items" class="timeline-items"></ol>
+                </section>
+                <canvas id="route" width="700" height="280" aria-label="按记录时间连接的足迹示意图" hidden></canvas>
+                <details id="route-table" class="data-card expandable" hidden><summary>查看采样坐标</summary>
+                  <div class="table-scroll"><table><caption>足迹坐标</caption><thead><tr><th scope="col">时间</th><th scope="col">纬度</th><th scope="col">经度</th><th scope="col">精度</th></tr></thead><tbody id="points"></tbody></table></div>
+                  <div id="points-pagination" class="pager" hidden>
+                    <button id="points-prev" type="button">上一页</button><span id="points-page-number"></span><button id="points-next" type="button">下一页</button>
+                  </div>
+                </details>
+              </section>
+              <section class="detail-page" data-detail-page="conversation" hidden>
+                <div class="data-card">
+                  <h3 id="conversation-title">绑定对话</h3>
+                  <p id="conversation-status" class="state-line" role="status"></p>
+                  <button id="more-conversation" type="button" hidden>加载更早的消息</button>
+                  <ol id="conversation-items" class="conversation-items"></ol>
+                </div>
+              </section>
+              <section class="detail-page" data-detail-page="records" hidden>
+                <div class="actions record-actions"><button type="button" id="load-records">刷新记录</button><p id="records-status" class="state-line" role="status"></p></div>
+                <div class="data-grid record-grid">
+                  <section class="data-card"><h3>动态</h3><ul id="activities" class="record-list"></ul><button type="button" id="more-activity" hidden>更早的动态</button></section>
+                  <section class="data-card"><h3>常去地点</h3><ul id="saved-places" class="record-list"></ul></section>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </section>
+      <section id="audit-page" aria-labelledby="audit-title" hidden>
+        <div class="page-title"><h1 id="audit-title">操作日志</h1></div>
+        <div class="panel audit">
+          <form id="audit-form" class="actions audit-form">
+            <label>登录名<input id="audit-username" type="search" placeholder="全部用户" maxlength="32"></label>
+            <label>日期（北京时间）<input id="audit-date" type="date" aria-label="操作日期"></label>
+            <button type="submit" class="primary">查询</button>
+            <button id="audit-clear" type="button">清空</button>
+          </form>
+          <p id="audit-status" class="state-line" role="status"></p>
+          <div class="table-scroll"><table><thead><tr><th scope="col">时间</th><th scope="col">操作</th><th scope="col">登录名</th></tr></thead><tbody id="audit"></tbody></table></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

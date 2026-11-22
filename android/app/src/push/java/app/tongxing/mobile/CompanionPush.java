@@ -42,8 +42,7 @@ public final class CompanionPush extends FirebaseMessagingService {
         }
     }
 
-    static void unregister(Context context) {
-        Api api = Api.get(context);
+    static void unregister(Context context, Api api) {
         synchronized (api) {
             String account = api.accountKey();
             SharedPreferences stored = prefs(context);

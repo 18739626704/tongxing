@@ -13,9 +13,11 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api")
 class SharingController {
-    record Registration(@NotBlank @Pattern(regexp = "[a-z0-9_]{3,32}") String username,
-                        @NotBlank @Size(min = 10, max = 64) String password,
-                        @Size(max = 32) String displayName) {}
+    record Registration(@NotBlank(message = "请输入用户名")
+                        @Pattern(regexp = "[a-z0-9_]{3,32}", message = "用户名须为 3–32 位小写英文字母、数字或下划线") String username,
+                        @NotBlank(message = "请输入密码")
+                        @Size(min = 10, max = 64, message = "密码须为 10–64 个字符") String password,
+                        @Size(max = 32, message = "显示名称最多 32 个字符") String displayName) {}
     record Accept(@NotBlank @Pattern(regexp = "[0-9A-Fa-f]{16}") String code) {}
     record Consent(@NotNull Boolean enabled, UUID pairId, Boolean locationUnavailable) {}
     record Reading(@NotNull UUID id, @NotNull UUID shareKey,
@@ -64,6 +66,8 @@ class SharingController {
     record Feed(String pairId, List<Event> events) {}
     record PushToken(@NotBlank @Size(max = 512) @Pattern(regexp = "[a-zA-Z0-9:_-]+") String token) {}
     record DeleteAccount(@NotBlank @Size(max = 64) String password) {}
+    record PasswordChange(@NotBlank @Size(max = 64) String currentPassword,
+                          @NotBlank @Size(min = 10, max = 64) String newPassword) {}
 
     private final SharingService sharing;
 
@@ -256,6 +260,22 @@ class SharingController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     void removePush(Principal user, @Valid @RequestBody PushToken request) {
         sharing.pushToken(user.getName(), request.token(), false);
+    }
+
+    record Profile(@NotBlank @Size(max = 32) String displayName) {}
+
+    @PutMapping("/account/profile")
+    Profile changeDisplayName(Principal user, @Valid @RequestBody Profile profile) {
+        return new Profile(sharing.changeDisplayName(user.getName(), profile.displayName()));
+    }
+
+    @PutMapping("/account/password")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void changePassword(Principal user, @Valid @RequestBody PasswordChange request,
+                        jakarta.servlet.http.HttpServletRequest http) {
+        sharing.changePassword(user.getName(), request);
+        var session = http.getSession(false);
+        if (session != null) session.invalidate();
     }
 
     @DeleteMapping("/account")

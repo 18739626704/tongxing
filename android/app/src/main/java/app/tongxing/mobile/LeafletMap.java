@@ -7,22 +7,24 @@ import android.content.Intent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import androidx.webkit.WebViewAssetLoader;
 import org.json.JSONObject;
 
 final class LeafletMap implements NativeMap {
-    private static final String ASSET = "file:///android_asset/map.html";
+    private static final String ASSET = "https://appassets.androidplatform.net/assets/map.html";
     private final WebView view;
-    private final boolean streetMap;
     private JSONObject latest;
     private boolean ready;
     private boolean destroyed;
 
     @SuppressLint({"SetJavaScriptEnabled", "ClickableViewAccessibility"})
-    LeafletMap(Context context, int background, boolean streetMap) {
-        this.streetMap = streetMap;
+    LeafletMap(Context context, int background) {
+        var assets = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(context)).build();
         view = new WebView(context);
         view.setContentDescription("位置地图");
         view.setBackgroundColor(background);
@@ -31,8 +33,14 @@ final class LeafletMap implements NativeMap {
         settings.setAllowContentAccess(false);
         settings.setAllowFileAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setUserAgentString("Tongxing-Android/" + BuildConfig.VERSION_NAME);
+        settings.setUserAgentString("Tongxing-Android/" + BuildConfig.VERSION_NAME
+                + " (+https://github.com/18739626704/tongxing)");
         view.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView webView, WebResourceRequest request) {
+                return assets.shouldInterceptRequest(request.getUrl());
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView webView, WebResourceRequest request) {
                 if (request.isForMainFrame()
@@ -50,7 +58,6 @@ final class LeafletMap implements NativeMap {
             public void onPageFinished(WebView webView, String url) {
                 if (destroyed || !ASSET.equals(url)) return;
                 ready = true;
-                view.evaluateJavascript("window.setStreetMap(" + LeafletMap.this.streetMap + ")", null);
                 render();
             }
         });

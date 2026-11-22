@@ -25,6 +25,8 @@ final class AmapMap implements NativeMap {
     private boolean destroyed;
     private String mode = "";
     private String highlightId = "";
+    private boolean following = true;
+    private int lastPointCount;
 
     static boolean available() { return true; }
 
@@ -45,6 +47,12 @@ final class AmapMap implements NativeMap {
         map.getUiSettings().setZoomControlsEnabled(false);
         map.getUiSettings().setTiltGesturesEnabled(false);
         map.getUiSettings().setRotateGesturesEnabled(false);
+        map.setOnMapTouchListener(event -> {
+            int action = event.getActionMasked();
+            if (action == android.view.MotionEvent.ACTION_MOVE || action == android.view.MotionEvent.ACTION_POINTER_DOWN) {
+                following = false;
+            }
+        });
         map.moveCamera(CameraUpdateFactory.newLatLngZoom(coordinate(34.75, 113.63), 4));
         map.setOnMapLoadedListener(() -> {
             ready = true;
@@ -87,19 +95,35 @@ final class AmapMap implements NativeMap {
         var highlight = data.optJSONObject("highlight");
         String nextHighlight = highlight == null ? "" : highlight.optString("id");
         String nextMode = data.optString("mode");
+        boolean recenter = data.optBoolean("recenter");
+        boolean changed = !nextMode.equals(mode);
+        boolean live = "live".equals(nextMode) || "partner".equals(nextMode);
+        var cameraPoints = points;
+        if ("partner".equals(nextMode)) {
+            cameraPoints = new ArrayList<>();
+            for (int i = 0; i < points.size(); i++) {
+                if (raw.optJSONObject(i).optBoolean("partner")) cameraPoints.add(points.get(i));
+            }
+        }
+        var padding = padding(data.optInt("top"), data.optInt("bottom"));
+        if (changed || recenter) following = true;
         if (highlight != null) {
             List<LatLng> selected = drawHighlight(highlight);
             if (!selected.isEmpty() && (!nextHighlight.equals(highlightId) || data.optBoolean("recenter"))) {
-                fit(selected, data.optInt("top"), data.optInt("bottom"));
+                fit(selected, padding, 17);
             }
             mode = nextMode;
-        } else if (!points.isEmpty() && (!nextMode.equals(mode) || data.optBoolean("recenter"))) {
-            fit(points, data.optInt("top"), data.optInt("bottom"));
+        } else if (!cameraPoints.isEmpty() && (changed || recenter
+                || (live && following && (cameraPoints.size() != lastPointCount || outsideViewport(cameraPoints, padding)
+                        || canZoomIn(cameraPoints, padding))))) {
+            float zoom = "partner".equals(nextMode) || (live && cameraPoints.size() > 1) ? map.getMaxZoomLevel() : 16;
+            fit(cameraPoints, padding, zoom);
             mode = nextMode;
-        } else if (points.isEmpty()) {
+        } else if (cameraPoints.isEmpty()) {
             mode = "";
         }
         highlightId = nextHighlight;
+        lastPointCount = cameraPoints.size();
     }
 
     private List<LatLng> drawHighlight(JSONObject highlight) {
@@ -147,18 +171,48 @@ final class AmapMap implements NativeMap {
         }
     }
 
-    private void fit(List<LatLng> points, int top, int bottom) {
+    private record Padding(int sides, int top, int bottom) {}
+
+    private Padding padding(int top, int bottom) {
+        int cap = Math.max(0, view.getHeight() * 2 / 5);
+        float density = view.getResources().getDisplayMetrics().density;
+        return new Padding(Math.round(30 * density), Math.min(cap, Math.round((top + 26) * density)),
+                Math.min(cap, Math.round((bottom + 22) * density)));
+    }
+
+    private boolean outsideViewport(List<LatLng> points, Padding padding) {
+        for (LatLng position : points) {
+            var pixel = map.getProjection().toScreenLocation(position);
+            if (pixel == null || pixel.x < padding.sides || pixel.x > view.getWidth() - padding.sides
+                    || pixel.y < padding.top || pixel.y > view.getHeight() - padding.bottom) return true;
+        }
+        return false;
+    }
+
+    private boolean canZoomIn(List<LatLng> points, Padding padding) {
+        if (points.size() != 2 || map.getCameraPosition().zoom > map.getMaxZoomLevel() - 2) return false;
+        var projection = map.getProjection();
+        var first = projection.toScreenLocation(points.get(0));
+        var second = projection.toScreenLocation(points.get(1));
+        return first != null && second != null
+                && 4 * Math.abs((long) first.x - second.x) < view.getWidth() - 2 * padding.sides
+                && 4 * Math.abs((long) first.y - second.y) < view.getHeight() - padding.top - padding.bottom;
+    }
+
+    private void fit(List<LatLng> points, Padding padding, float singleZoom) {
+        int width = view.getWidth();
+        int height = view.getHeight();
+        if (width <= 2 * padding.sides || height <= padding.top + padding.bottom) return;
         if (points.stream().allMatch(point -> point.equals(points.get(0)))) {
-            map.moveCamera(CameraUpdateFactory.newLatLngZoom(points.get(0), 16));
+            map.setPointToCenter(width / 2, (height + padding.top - padding.bottom) / 2);
+            map.moveCamera(CameraUpdateFactory.newLatLngZoom(points.get(0), singleZoom));
             return;
         }
+        map.setPointToCenter(width / 2, height / 2);
         var bounds = LatLngBounds.builder();
         points.forEach(bounds::include);
-        int maxVertical = Math.max(1, view.getHeight() / 3);
-        float density = view.getResources().getDisplayMetrics().density;
-        int sides = Math.round(24 * density);
-        map.moveCamera(CameraUpdateFactory.newLatLngBoundsRect(bounds.build(), sides, sides,
-                Math.min(maxVertical, Math.round(top * density)), Math.min(maxVertical, Math.round(bottom * density))));
+        map.moveCamera(CameraUpdateFactory.newLatLngBoundsRect(bounds.build(), padding.sides, padding.sides,
+                padding.top, padding.bottom));
     }
 
     private LatLng coordinate(double latitude, double longitude) {

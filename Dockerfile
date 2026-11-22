@@ -2,6 +2,7 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /build
 COPY pom.xml .
 COPY src src
+COPY android/app/src/main/assets/leaflet* android/app/src/main/assets/
 RUN mvn --batch-mode -DskipTests package
 
 FROM eclipse-temurin:21-jre
