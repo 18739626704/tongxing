@@ -51,6 +51,8 @@ curl -fsS https://share.example.com/api/health
 
 ## 手机注册
 
+标准版填写自己的服务器地址。GitHub Releases 中另有固定连接 `https://tongxing.byterecall.xyz` 的直连版，仅需填写用户名和密码，适合无需部署的用户。使用自己的服务器时请选择标准版。
+
 0.7.2 起，输入服务器域名或 IP、用户名和密码即可注册。省略协议时客户端会补上 `https://`。正式服务器需要可信 HTTPS 证书。若使用 IP，证书也必须覆盖该 IP。新账号默认以用户名作为显示名。服务器默认允许新账号注册。仅供私用的实例在双方注册后，可将 `REGISTRATION_ENABLED` 设为 `false` 并重启服务，已有账号仍可登录。
 
 从 0.7.1 或更早版本升级时，可以从环境变量中移除旧的 `ENROLLMENT_KEY`。新版服务端会忽略旧客户端仍然发送的该字段。

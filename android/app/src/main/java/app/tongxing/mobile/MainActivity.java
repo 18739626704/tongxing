@@ -296,14 +296,21 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void authScreen() {
-        label(content, registering ? "创建自托管账号" : "登录到自己的服务器", 16, MUTED);
+        boolean hosted = Api.fixedServer();
+        label(content, hosted ? "连接 tongxing.byterecall.xyz"
+                : registering ? "创建自托管账号" : "登录到自己的服务器", 16, MUTED);
         gap(content, 18);
         LinearLayout form = card(content);
         boolean register = registering;
-        label(form, "服务器地址", 14, INK);
-        EditText address = field(form, "服务器域名或 IP 地址", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        address.setText(api.savedBase());
-        label(form, "例如 share.example.com 或 192.0.2.10:8443，默认使用 HTTPS。", 13, MUTED);
+        final EditText address;
+        if (hosted) {
+            address = null;
+        } else {
+            label(form, "服务器地址", 14, INK);
+            address = field(form, "服务器域名或 IP 地址", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+            address.setText(api.savedBase());
+            label(form, "例如 share.example.com 或 192.0.2.10:8443，默认使用 HTTPS。", 13, MUTED);
+        }
         label(form, "用户名", 14, INK);
         EditText username = field(form, "用户名", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         username.setAutofillHints(View.AUTOFILL_HINT_USERNAME);
@@ -324,16 +331,20 @@ public final class MainActivity extends ComponentActivity {
         hint.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         button(form, register ? "注册并登录" : "登录", true, () -> {
             if (busy) return;
-            String host = address.getText().toString();
+            String host = address == null ? "" : address.getText().toString();
             String user = username.getText().toString().trim();
             String pass = password.getText().toString();
             hint.setText("");
-            for (EditText input : new EditText[]{address, username, password}) input.setError(null);
+            username.setError(null);
+            password.setError(null);
             String addressError = null;
-            try {
-                Api.validateBase(host);
-            } catch (java.io.IOException invalid) {
-                addressError = invalid.getMessage();
+            if (address != null) {
+                address.setError(null);
+                try {
+                    Api.validateBase(host);
+                } catch (java.io.IOException invalid) {
+                    addressError = invalid.getMessage();
+                }
             }
             String userError = user.isEmpty() ? "请输入用户名"
                     : register && !user.matches("[A-Za-z0-9_]{3,32}") ? "请使用 3–32 位英文字母、数字或下划线" : null;
@@ -2193,7 +2204,8 @@ public final class MainActivity extends ComponentActivity {
             hint.setText(error instanceof Api.Failure ? error.getMessage()
                     : error instanceof java.net.SocketTimeoutException ? "连接超时，请检查网络后刷新"
                     : error instanceof java.io.IOException && error.getMessage() != null
-                            && error.getMessage().startsWith("请输入") ? error.getMessage() : "连接失败，请检查网络和服务器地址");
+                            && error.getMessage().startsWith("请输入") ? error.getMessage() : Api.fixedServer() ? "连接同行服务器失败，请检查网络后重试"
+                            : "连接失败，请检查网络和服务器地址");
         }
     }
 

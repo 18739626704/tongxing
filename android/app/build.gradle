@@ -5,13 +5,15 @@ plugins {
 // The standard APK contains both renderers. Opt out only for a lightweight APK.
 def amapEnabled = providers.gradleProperty('tongxingAmap').map { it.toBoolean() }.getOrElse(true)
 def amapSdk = providers.gradleProperty('tongxingAmapSdk').orNull
+def hosted = providers.gradleProperty('tongxingHosted').map { it.toBoolean() }.getOrElse(false)
+def appId = hosted ? 'app.tongxing.mobile.hosted' : 'app.tongxing.mobile'
 def firebaseConfig = providers.gradleProperty('tongxingFirebaseConfig').orNull
 def firebase = firebaseConfig ? new groovy.json.JsonSlurper().parse(file(firebaseConfig)) : null
 def firebaseClient = firebase?.client?.find {
-    it.client_info.android_client_info.package_name == 'app.tongxing.mobile'
+    it.client_info.android_client_info.package_name == appId
 }
 if (firebase && !firebaseClient) {
-    throw new GradleException('Firebase config must register app.tongxing.mobile')
+    throw new GradleException("Firebase config must register ${appId}")
 }
 
 android {
@@ -20,11 +22,13 @@ android {
     namespace 'app.tongxing.mobile'
     compileSdk 35
     defaultConfig {
-        applicationId 'app.tongxing.mobile'
+        applicationId appId
+        buildConfigField 'String', 'FIXED_SERVER_URL', hosted ? '"https://tongxing.byterecall.xyz"' : '""'
+        manifestPlaceholders = [appLabel: hosted ? '同行 · 直连版' : '同行']
         minSdk 26
         targetSdk 35
-        versionCode 27
-        versionName '0.7.9'
+        versionCode 28
+        versionName '0.7.10'
         if (firebase) {
             resValue 'string', 'google_app_id', firebaseClient.client_info.mobilesdk_app_id
             resValue 'string', 'google_api_key', firebaseClient.api_key[0].current_key
