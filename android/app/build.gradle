@@ -27,8 +27,8 @@ android {
         manifestPlaceholders = [appLabel: hosted ? '同行 · 直连版' : '同行']
         minSdk 26
         targetSdk 35
-        versionCode 28
-        versionName '0.7.10'
+        versionCode 29
+        versionName '0.7.11'
         if (firebase) {
             resValue 'string', 'google_app_id', firebaseClient.client_info.mobilesdk_app_id
             resValue 'string', 'google_api_key', firebaseClient.api_key[0].current_key
