@@ -238,13 +238,22 @@ public class MainActivityTest {
                 assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().width);
                 assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.getLayoutParams().height);
                 assertTrue(web.getParent() instanceof android.widget.FrameLayout);
+                assertFalse(text(root, "应用时长").isShown());
+                text(root, "Bob").performClick();
+                var focused = org.robolectric.util.ReflectionHelpers.<JSONObject>getField(activity, "mapData");
+                assertEquals("partner", focused.optString("mode"));
+                assertEquals(1, focused.getJSONArray("points").length());
+                assertTrue(focused.getJSONArray("points").getJSONObject(0).getBoolean("partner"));
+                text(root, "看双方").performClick();
+                assertEquals("live", org.robolectric.util.ReflectionHelpers.<JSONObject>getField(activity, "mapData").optString("mode"));
+                text(root, "展开").performClick();
                 text(root, "应用时长").performClick();
                 await(() -> org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() != null);
                 var usage = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
                 assertNotNull(text(usage.getWindow().getDecorView(), "地图应用"));
                 usage.dismiss();
-                assertEquals(1, text(root, "回中心").getMaxLines());
-                assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT, text(root, "回中心").getLayoutParams().width);
+                assertEquals(1, text(root, "看双方").getMaxLines());
+                assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT, text(root, "看双方").getLayoutParams().width);
                 assertEquals(1, text(root, "收起").getMaxLines());
                 text(root, "收起").performClick();
                 assertNotNull(text(root, "展开"));
@@ -276,6 +285,7 @@ public class MainActivityTest {
 
                 text(root, "设置").performClick();
                 assertNotNull(text(root, "权限与共享"));
+                assertNotNull(text(root, "修改密码"));
                 assertNull(text(root, "查看我的应用使用明细"));
                 assertNull(text(root, "饮水和就寝提醒"));
                 assertNull(text(root, "清除我的轨迹"));
@@ -392,7 +402,8 @@ public class MainActivityTest {
                         case "/api/csrf" -> reply(200, "{\"header\":\"X-CSRF-TOKEN\",\"token\":\"test-csrf\"}");
                         case "/api/login" -> reply(204, "").setHeader("Set-Cookie", "JSESSIONID=active; Path=/; HttpOnly");
                         case "/api/overview" -> reply(200, "{\"self\":{\"sharing\":" + active.get()
-                                + "},\"partner\":{\"displayName\":\"Bob\",\"sharing\":false}}");
+                                + "},\"partner\":{\"displayName\":\"Bob\",\"sharing\":false},"
+                                + "\"pairId\":\"27d5709f-eacb-4236-ab46-84d246764669\"}");
                         case "/api/sharing" -> {
                             sharingMethods.add(request.getMethod());
                             yield reply(200, "{\"shareKey\":\"" + key + "\"}");
@@ -420,18 +431,20 @@ public class MainActivityTest {
                 assertEquals(List.of("GET"), new ArrayList<>(sharingMethods));
             }
             active.set(false);
+            Api.get(app).withdrawSharing();
+            Api.get(app).stopSharing();
+            sharingMethods.clear();
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
                 View root = controller.get().findViewById(android.R.id.content);
-                await(() -> text(root, "请在「权限与共享」确认共享范围") != null);
-                assertNull(text(root, "开始共享"));
-                assertEquals(List.of("GET"), new ArrayList<>(sharingMethods));
+                await(() -> text(root, "已暂停共享 · 点击恢复") != null);
+                assertTrue(sharingMethods.isEmpty());
                 assertNull(shadowOf(app).getNextStartedService());
             }
         }
     }
 
     @Test
-    public void startsAutomaticallyWhenPairWasAcceptedAndLocationIsGranted() throws Exception {
+    public void startsAutomaticallyWhenPairedAndLocationIsGranted() throws Exception {
         String pair = "27d5709f-eacb-4236-ab46-84d246764669";
         String key = "13a7397b-7c39-4e86-9309-11d530f921ac";
         AtomicReference<String> startBody = new AtomicReference<>();
@@ -457,12 +470,6 @@ public class MainActivityTest {
             shadowOf(location).setProviderEnabled(LocationManager.GPS_PROVIDER, true);
             Api api = Api.get(app);
             api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
-            api.acceptUnifiedConsent(pair);
-            api.requestSuspension();
-            api.stopSharing();
-            assertFalse(api.sharingNeedsReview());
-            assertTrue(api.sharingSetupAccepted(pair));
-            startBody.set(null);
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
                 MainActivity activity = controller.get();
                 View root = activity.findViewById(android.R.id.content);
@@ -483,7 +490,7 @@ public class MainActivityTest {
     }
 
     @Test
-    public void unifiedConsentEnablesJourneyAndScreenWithoutSeparateToggles() throws Exception {
+    public void pairedAccountsEnableJourneyAndScreenWithoutExtraConsent() throws Exception {
         String pair = "27d5709f-eacb-4236-ab46-84d246764669";
         var journey = new AtomicBoolean();
         var screen = new AtomicBoolean();
@@ -513,16 +520,8 @@ public class MainActivityTest {
             api.authenticate("http://127.0.0.1:" + server.getPort(), "alice", "TestPassword123", false);
 
             try (var controller = Robolectric.buildActivity(MainActivity.class).setup()) {
-                await(() -> org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog() != null);
-                var dashboard = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
-                assertFalse(journey.get());
-                assertFalse(screen.get());
-                text(dashboard.getWindow().getDecorView(), "确认权限与共享").performClick();
-                org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog()
-                        .getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();
-                await(() -> api.unifiedConsentAccepted(pair));
                 await(() -> journey.get() && screen.get());
-                await(() -> text(dashboard.getWindow().getDecorView(), "伴侣屏幕状态  ·  已启用") != null);
+                assertNull(org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog());
             }
         }
     }

@@ -806,6 +806,23 @@ class SharingService {
     }
 
     @Transactional
+    public void changePassword(String username, SharingController.PasswordChange change) {
+        guard.lock();
+        Member member = current(username);
+        String current = change.currentPassword();
+        String next = change.newPassword();
+        if (current.getBytes(StandardCharsets.UTF_8).length > 72 || !passwords.matches(current, member.passwordHash)) {
+            throw failure(HttpStatus.BAD_REQUEST, "当前密码不正确");
+        }
+        if (next.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw failure(HttpStatus.BAD_REQUEST, "新密码不能超过 72 字节");
+        }
+        if (next.equals(current)) throw failure(HttpStatus.BAD_REQUEST, "新密码须与当前密码不同");
+        jdbc.update("UPDATE member SET password_hash = ?, session_version = session_version + 1 WHERE id = ?",
+                passwords.encode(next), member.id);
+    }
+
+    @Transactional
     public void deleteAccount(String username, String password) {
         Member member = current(username);
         if (!passwords.matches(password, member.passwordHash)) throw failure(HttpStatus.FORBIDDEN, "密码不正确");

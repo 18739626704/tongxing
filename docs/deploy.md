@@ -47,7 +47,7 @@ curl -fsS https://share.example.com/api/health
 | `REGISTRATION_ENABLED` | 可选，默认允许注册 |
 | 地图、推送与管理员 | 参照上表的可选变量 |
 
-已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.5.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
+已有 MySQL 和 HTTPS 反向代理时，也可用 JDK 21 执行 `mvn verify`，设置同一组环境变量后用 `java -jar target/tongxing-server-0.7.6.jar` 启动，再由反向代理把 HTTPS 转发到 8080。正式部署保持 `SECURE_COOKIE=true`。
 
 ## 手机注册
 
